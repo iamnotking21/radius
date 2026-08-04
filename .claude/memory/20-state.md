@@ -338,3 +338,27 @@ DEFERRED, not cancelled: all iOS work · Mac procurement · Carrier B validation
   pointer). ADR-009 Accepted. STILL OPEN: HANDOFF-3 — root CLAUDE.md REPO MAP has no owner line for
   .github/ or .gitea/ (orchestrator). NOTHING HAS EVER RUN IN CI. Not once. "Done" for this item
   means one observed green run, and that has not happened.
+2026-08-04 qa-test · B12 SELF-TEST BUG, FOUND BY THE FIRST REAL CI RUN, NOT BY ME. Run 2
+  (ubuntu-latest fast-gates) failed gate-selftests. android job (conformance gate itself, incl. the
+  live 116-vector count) was GREEN — the production fix in qa_gradle_wrapper() was correct from the
+  start. The FAILURE WAS INSIDE THE FIX'S OWN TEST: test_gradle_wrapper.sh asserted that the REAL,
+  un-overridden `uname` on "this machine" resolves to `./gradlew.bat` — true only on the Windows box
+  that wrote it. On ubuntu-latest, real uname is Linux, qa_gradle_wrapper() correctly returned
+  `./gradlew`, and the assertion demanding `.bat` failed BECAUSE THE CODE WAS WORKING. Textbook
+  instance of the exact defect class B12 exists to remove (a host-OS hardcode), reintroduced one
+  layer up, inside the regression test for removing a host-OS hardcode — and STRUCTURALLY
+  UNCATCHABLE on a single-OS dev box: this file's own header said so in writing before CI ran
+  ("this test cannot itself observe [Linux/Darwin uname] on a Windows machine"), and 45/45 green
+  locally was never claimed as more than that. It took a second OS to see it. That is what CI is for.
+  FIX: the real-uname assertion no longer restates which OS wrote the test. It now asserts a
+  property true on ANY host — the real result is a recognised wrapper name (`./gradlew` or
+  `./gradlew.bat`), that file actually exists under mobile/, and (only for `./gradlew`, since `.bat`
+  is invoked via Windows' file association, not the unix x-bit) that it is executable. Caught and
+  fixed a real bug in the process: `assert_true "..." [[ -x "$path" ]]` does not work — `[[` is a
+  shell reserved word, not a command, and cannot be invoked through `"$@"`; switched to `[` (a real
+  command). AUDITED the rest of devops/ci/tests/gates/ for the same blind spot (grepped for
+  windows-latest/MINGW/MSYS_NT/.bat/.exe/cmd.exe/powershell and GNU-vs-BSD sed/stat divergences):
+  none found. Self-tests now 46/46 locally (was 45; net +1 assertion from the fix, one check split
+  into "recognised name" + "exists" + conditionally "executable"). Awaiting CI run 3 (queued on
+  devops-tencent's runs-on flip) to confirm on the actual second OS rather than trusting local green
+  again — that is the standing lesson of this whole exchange, not a one-off.
