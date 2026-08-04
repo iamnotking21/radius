@@ -284,3 +284,24 @@ DEFERRED, not cancelled: all iOS work · Mac procurement · Carrier B validation
   is forced onto windows-latest (2x minutes) and the Linux/Gitea conformance stage cannot run.
   qa-test one-liner; run-stage.sh detects it and prints the reason instead of "no such file".
   COST: $0/mo. infra still not provisioned (B3).
+2026-08-04 qa-test · B12 FIX SIDE CLOSED. `qa_gradle_wrapper()` added to devops/ci/gates/lib/
+  common.sh — same 3-line uname-branch rule as run-stage.sh's gradle_wrapper() (pattern reused,
+  their file untouched, per the repo's own "two ways of choosing a wrapper = two ways of counting
+  vectors" lesson). conformance_gate.sh phase 2 now calls it instead of hardcoding ./gradlew.bat.
+  release_uuid_gate.sh's one diagnostic error-message string (advice text, not an invocation) fixed
+  the same way while in the file. VERIFIED ON WINDOWS (the only machine that can run it today):
+  conformance_gate.sh end-to-end PASS, phase1 116/116 + phase2 :shared:testDebugUnitTest green,
+  live count "116 executable cases across 7 files". Self-tests 45/45 (was 39; +6 new for
+  qa_gradle_wrapper, all branches incl. the real-uname-on-this-machine case). LINUX PATH REASONED,
+  NOT EXECUTED — cannot run Linux here. What's actually checked: the case pattern is byte-identical
+  to run-stage.sh's own (already relied on as portable); mobile/gradlew is committed 100755, LF-only
+  shebang `#!/bin/sh`; core.autocrlf=true means the git blob for every file touched this session is
+  LF-only regardless of this machine's local checkout, confirmed by grep on `git show HEAD:<path>`.
+  UNPROVEN: an actual Gradle build (AGP/SDK/toolchain resolution, first-time dependency download)
+  succeeding end-to-end on a real Linux box — no way to execute that from here.
+  devops/ci/workflows/android.yml (qa-test's, HANDOFF-2 from devops-tencent) REDUCED TO A POINTER —
+  it never ran (wrong directory for either provider's discovery), real definitions now live in
+  .github+.gitea/workflows + run-stage.sh + devops/ci/gates, and a stale-but-authoritative-looking
+  workflow file is how someone edits the wrong thing later. History preserved in git, not deleted.
+  HANDOFF TO devops-tencent: flip `runs-on: windows-latest` -> `ubuntu-latest` for the `android` job
+  in .github/workflows/ci.yml — the qa-test half of B12 is done, this is the other half.

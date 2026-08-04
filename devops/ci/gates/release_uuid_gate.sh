@@ -176,7 +176,7 @@ artifact_scan() {
       qa_fail "no release APK found and none passed via --apk."
       qa_fail "This phase was REQUESTED and cannot be skipped silently just because nothing was built"
       qa_fail "(it's a real check even though the source scan is primary — see header)."
-      qa_fail "Build one first: (cd mobile && ./gradlew.bat :android:assembleRelease --no-daemon)"
+      qa_fail "Build one first: (cd mobile && $(qa_gradle_wrapper) :android:assembleRelease --no-daemon)"
       return 1
     fi
     APK_PATH="${candidates[0]}"

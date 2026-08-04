@@ -75,3 +75,21 @@ qa_strip_comments() {
     -e 's#^[[:space:]]*/\*\*?.*$##' \
     -- "$1"
 }
+
+# ---- gradle invocation -------------------------------------------------------------------------
+# qa_gradle_wrapper — echoes the correct wrapper entrypoint for THIS OS ("./gradlew.bat" on
+# Windows, "./gradlew" everywhere else). The Gradle wrapper ships two entrypoints and CI runs on
+# more than one OS family (GitHub's windows-latest today, a self-hosted Linux Gitea runner once B3
+# closes — devops/ci/runner/run-stage.sh). That file's `gradle_wrapper()` (devops-tencent, a runner
+# concern) makes the identical decision for the runner's own Gradle calls; this is the same
+# three-line rule, kept here rather than sourced from theirs so ownership stays one-writer-per-file,
+# but DELIBERATELY not reinvented — two independent implementations of "how do we pick a wrapper"
+# is the same defect class this file's `qa_strip_comments` neighbour and the vectors-count history
+# (see conformance_gate.sh's header) both already taught this codebase to avoid. If this rule ever
+# needs to change, change run-stage.sh's copy too — same day, same PR discussion.
+qa_gradle_wrapper() {
+  case "$(uname -s)" in
+    MINGW*|MSYS*|CYGWIN*) echo "./gradlew.bat" ;;
+    *)                    echo "./gradlew" ;;
+  esac
+}

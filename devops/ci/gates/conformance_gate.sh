@@ -96,13 +96,14 @@ if [[ $RUN_CODEC -eq 1 ]]; then
   else
     qa_info "  found candidate harness file(s):"
     echo "$harness_files" | sed 's/^/    /'
-    qa_info "  running :shared:testDebugUnitTest (Android-target JVM tests, incl. commonTest)..."
+    gw="$(qa_gradle_wrapper)"
+    qa_info "  running $gw :shared:testDebugUnitTest (Android-target JVM tests, incl. commonTest)..."
     (
       cd "$MOBILE_DIR"
       if [[ -n "${JAVA_HOME:-}" ]]; then
         export PATH="$JAVA_HOME/bin:$PATH"
       fi
-      ./gradlew.bat :shared:testDebugUnitTest --no-daemon
+      "$gw" :shared:testDebugUnitTest --no-daemon
     ) || { qa_fail "phase 2: :shared:testDebugUnitTest FAILED — a vector diverged from the codec, or the harness does not compile"; overall_status=1; }
 
     if [[ $overall_status -eq 0 ]]; then

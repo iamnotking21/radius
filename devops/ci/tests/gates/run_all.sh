@@ -2,9 +2,11 @@
 # devops/ci/tests/gates/run_all.sh
 #
 # Runs every gate self-test in this directory. This is the "DONE MEANS test written + running in
-# CI" mechanism for devops/ci/gates/ — wired into the workflow as the `gate-selftests` job (see
-# devops/ci/workflows/android.yml). All fixtures are synthetic; none of this touches the live repo
-# or Gradle, so it runs in a couple of seconds and has no false dependency on mobile/ build state.
+# CI" mechanism for devops/ci/gates/ — wired into CI as the `gate-selftests` stage (see
+# devops/ci/runner/run-stage.sh, invoked from .github/workflows/ci.yml and .gitea/workflows/ci.yml;
+# devops/ci/workflows/android.yml is superseded, now a pointer to those, see that file). All
+# fixtures are synthetic; none of this touches the live repo or Gradle, so it runs in a couple of
+# seconds and has no false dependency on mobile/ build state.
 
 set -euo pipefail
 THIS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
