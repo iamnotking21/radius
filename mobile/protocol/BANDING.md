@@ -324,6 +324,19 @@ Therefore:
   boundary. Not in a public type, not in a debug build, not behind a feature
   flag, not in a crash report, not in an analytics event. A debug-only accessor
   is not safer — it is the same accessor with a comment on it.
+
+  **The one carve-out, named so it stays one.** `BandingPipeline.conformanceState()`
+  is `internal` and returns `adjusted_dbm`. It exists because `vectors/banding.json`
+  asserts `adjusted_dbm` per step, and those assertions are what caught two real
+  bugs (outlier-gate livelock; warm-up margin shifting the ADR thresholds) — a
+  vector whose expectations cannot be checked is not a vector. Ruled to stay
+  (decision 42). Two honest qualifications: `internal` is a Kotlin compile-time
+  property and **not** JVM access control, so on Android this is a mangled-name
+  call away from app code rather than genuinely unreachable; and the reflection
+  lint in the test suite (`noNewRssiShapedAccessorAppears`) is a NAME check on
+  public members, not a proof of containment. Containment here rests on review.
+  Any second carve-out needs the same paragraph written for it, or it does not
+  happen.
 - RSSI MUST NOT be transmitted to the server in any form. The proximity service
   receives `(account, band, epoch)` and nothing finer. Timestamps are bucketed to
   the epoch before leaving the device, because a fine-grained encounter timeline

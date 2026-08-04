@@ -131,6 +131,115 @@
     }
   ],
 
+  "destruction_at_seam_note": {
+    "spec": "KEY_SCHEDULE.md §8.5.2 — 'the superseded account_key is destroyed on the device at the seam. The ring retains the entry's kid and effective_from for ordering, and zeroes the key material.'",
+    "why_added": "Added 2026-08-04. The rule was normative in the spec and UNIMPLEMENTED in the client, so a device retained every account_key it had ever been issued: ONE in-process compromise yielded retroactive derivation across its entire rotation history — precisely the blast radius ADR-008 M4's rotation was bought to bound (§8.1). §2.3 is explicit that the Keystore wrap gives no protection against a compromised running process, so retention was the whole exposure.",
+    "shape": "Each case queries the SAME (day, epoch) twice: once BEFORE the prune, where the eid is a value already asserted in `cases` above, and once AFTER, where it MUST be E_NO_ACTIVE_KEY. Asserting both halves is the point — a test that only checked the failure would also pass on a ring that had been emptied, broken, or never worked.",
+    "not_provable_here": "That the bytes are unrecoverable from process memory. fill(0) overwrites the array we hold; a moving collector may already have copied it elsewhere. These vectors prove the DERIVATION is gone, which is the property the protocol can honestly state."
+  },
+
+  "destruction_at_seam": [
+
+    { "name": "RING_A-prune-at-the-day-seam",
+      "ring": "RING_A",
+      "prunes": [ { "day_index": 20670, "epoch_index": 0, "expect_destroyed": 1 } ],
+      "expect_destroyed_kids": [0],
+      "queries": [
+        { "day_index": 20669, "epoch_index": 95,
+          "before_prune": { "kid": 0, "ephemeral_id_hex": "b5838f2738ffbba849e38aefd234f688" },
+          "after_prune":  { "expect_error": "E_NO_ACTIVE_KEY" },
+          "note": "THE CASE. The last epoch under the superseded key was derivable one line earlier and is not derivable now. Not by an attacker, and not by us — that symmetry is the whole mechanism." },
+        { "day_index": 20669, "epoch_index": 0,
+          "before_prune": { "kid": 0, "ephemeral_id_hex": "e2d788cb4e8015eed55da41c3de188b6" },
+          "after_prune":  { "expect_error": "E_NO_ACTIVE_KEY" },
+          "note": "history further back is equally gone. Destruction is not a sliding window." },
+        { "day_index": 20670, "epoch_index": 0,
+          "before_prune": { "kid": 1, "ephemeral_id_hex": "023630c4a48083bf0b67807a5e69778f" },
+          "after_prune":  { "kid": 1, "ephemeral_id_hex": "023630c4a48083bf0b67807a5e69778f" },
+          "note": "the ACTIVE key is untouched. A prune that broke advertising would be a denial of service dressed as a security fix." }
+      ] },
+
+    { "name": "RING_C-prune-at-second-seam-destroys-every-superseded-kid",
+      "ring": "RING_C",
+      "prunes": [ { "day_index": 20669, "epoch_index": 1, "expect_destroyed": 2 } ],
+      "expect_destroyed_kids": [0, 1],
+      "queries": [
+        { "day_index": 0, "epoch_index": 0,
+          "before_prune": { "kid": 0, "ephemeral_id_hex": "be42ba8d9968b7e0a3c68f98f1f92ff2" },
+          "after_prune":  { "expect_error": "E_NO_ACTIVE_KEY" } },
+        { "day_index": 20669, "epoch_index": 0,
+          "before_prune": { "kid": 1, "ephemeral_id_hex": "099a52b227529153097a981ff7179cac" },
+          "after_prune":  { "expect_error": "E_NO_ACTIVE_KEY" },
+          "note": "kid1 was active for exactly ONE epoch and is superseded, so it goes too. 'Destroy the previous one' is not the rule; 'destroy everything strictly older than active' is." },
+        { "day_index": 20669, "epoch_index": 1,
+          "before_prune": { "kid": 2, "ephemeral_id_hex": "d9bc28cf7a59441c63444155ef6e4d26" },
+          "after_prune":  { "kid": 2, "ephemeral_id_hex": "d9bc28cf7a59441c63444155ef6e4d26" } },
+        { "day_index": 20669, "epoch_index": 95,
+          "before_prune": { "kid": 2, "ephemeral_id_hex": "b5838f2738ffbba849e38aefd234f688" },
+          "after_prune":  { "kid": 2, "ephemeral_id_hex": "b5838f2738ffbba849e38aefd234f688" } }
+      ] },
+
+    { "name": "prune-is-idempotent",
+      "ring": "RING_A",
+      "prunes": [
+        { "day_index": 20670, "epoch_index": 0, "expect_destroyed": 1 },
+        { "day_index": 20670, "epoch_index": 0, "expect_destroyed": 0 },
+        { "day_index": 20670, "epoch_index": 5, "expect_destroyed": 0 }
+      ],
+      "expect_destroyed_kids": [0],
+      "queries": [
+        { "day_index": 20670, "epoch_index": 0,
+          "before_prune": { "kid": 1, "ephemeral_id_hex": "023630c4a48083bf0b67807a5e69778f" },
+          "after_prune":  { "kid": 1, "ephemeral_id_hex": "023630c4a48083bf0b67807a5e69778f" } }
+      ],
+      "note": "this is driven from the epoch-boundary restart (§4.2), so it runs every 15 minutes for the life of the install. It must cost nothing and change nothing once there is nothing left to destroy." },
+
+    { "name": "prune-before-any-seam-destroys-nothing",
+      "ring": "RING_C",
+      "prunes": [ { "day_index": 20668, "epoch_index": 95, "expect_destroyed": 0 } ],
+      "expect_destroyed_kids": [],
+      "queries": [
+        { "day_index": 20668, "epoch_index": 95,
+          "before_prune": { "kid": 0, "ephemeral_id_hex": "97fcbe7ebd60ed02dde5025426873e7d" },
+          "after_prune":  { "kid": 0, "ephemeral_id_hex": "97fcbe7ebd60ed02dde5025426873e7d" } },
+        { "day_index": 20669, "epoch_index": 0,
+          "before_prune": { "kid": 1, "ephemeral_id_hex": "099a52b227529153097a981ff7179cac" },
+          "after_prune":  { "kid": 1, "ephemeral_id_hex": "099a52b227529153097a981ff7179cac" },
+          "note": "a PENDING key — one whose effective_from has not arrived — is never destroyed. §8.5.2 permits a device to hold one active and one pending key." }
+      ] },
+
+    { "name": "prune-before-the-ring-begins-destroys-nothing",
+      "ring": "RING_D",
+      "prunes": [ { "day_index": 20668, "epoch_index": 95, "expect_destroyed": 0 } ],
+      "expect_destroyed_kids": [],
+      "queries": [
+        { "day_index": 20669, "epoch_index": 0,
+          "before_prune": { "kid": 0, "ephemeral_id_hex": "fb7a44650af26582280ba34024a53c8d" },
+          "after_prune":  { "kid": 0, "ephemeral_id_hex": "fb7a44650af26582280ba34024a53c8d" } }
+      ],
+      "note": "CLOCK-REWIND GUARD. There is no active entry at the pruned instant, so there is nothing 'strictly older than active' and nothing is destroyed. A device whose clock is wrong, or is being made wrong, must not be talked into destroying its own keys — destruction is irreversible and this is the one input to it an attacker might influence." },
+
+    { "name": "self-eid-rejection-loses-the-previous-epoch-after-a-seam-prune",
+      "ring": "RING_C",
+      "prunes": [ { "day_index": 20669, "epoch_index": 1, "expect_destroyed": 2 } ],
+      "expect_destroyed_kids": [0, 1],
+      "queries": [],
+      "self_eid": {
+        "own_day_index": 20669, "own_epoch_index": 1,
+        "note": "THE HONEST COST OF §8.5.2, PINNED SO IT CANNOT SURPRISE ANYONE LATER. The accepted window is {e-1, e, e+1}; at a seam e-1 belongs to the destroyed key, so after the prune this device can no longer derive — and therefore no longer RECOGNISE — its own previous-epoch eid. A reflected or relayed copy of it is passed to resolution instead of being dropped by §9.6. Accepted deliberately: §9.6 self-rejection is defence in depth against a rare event (reflection, relay, a twin device), §8.5.2 destruction is a normative rule against a permanent one, and holding the superseded key 15 minutes longer to keep a duplicate-broadcast detector would spend exactly the property the destruction buys. ESCALATED: §8.5.2 and §9.6 should be reconciled in the spec text, not silently in code.",
+        "cases": [
+          { "observed_ephemeral_id_hex": "d9bc28cf7a59441c63444155ef6e4d26", "expect_before": "DROP", "expect_after": "DROP",
+            "note": "current epoch, active kid. Unchanged, and this is the one that matters most — self-rejection of the id we are emitting RIGHT NOW still works." },
+          { "observed_ephemeral_id_hex": "0605935efeeb2b8c17dd10bb1c4e773d", "expect_before": "DROP", "expect_after": "DROP",
+            "note": "next epoch, active kid. Unchanged." },
+          { "observed_ephemeral_id_hex": "099a52b227529153097a981ff7179cac", "expect_before": "DROP", "expect_after": "PASS_TO_RESOLUTION",
+            "note": "previous epoch, DESTROYED kid1. This is the regression the trade buys, stated out loud." },
+          { "observed_ephemeral_id_hex": "97fcbe7ebd60ed02dde5025426873e7d", "expect_before": "PASS_TO_RESOLUTION", "expect_after": "PASS_TO_RESOLUTION",
+            "note": "an unrelated id. Pruning must not turn self-rejection into a blanket accept OR a blanket reject." }
+        ]
+      } }
+  ],
+
   "self_eid_rejection": {
     "note": "KEY_SCHEDULE.md §9.6. A receiver MUST discard any frame whose ephemeral_id equals one of ITS OWN eids in its own accepted window, before resolution. Own state is deliberately set exactly ON a seam, so the own-window spans two kids.",
     "own_state": { "own_ring": "RING_C", "own_day_index": 20669, "own_epoch_index": 1, "own_window_epochs": [0, 1, 2] },

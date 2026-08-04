@@ -3,7 +3,15 @@
   "protocol_version": "v0",
   "spec_root": "mobile/protocol/",
   "owner": "ble-protocol",
-  "status": "DRAFT — spec landed, no implementation yet, never executed against any codebase",
+  "status": "EXECUTED — 2026-08-04. Every case below runs as a real test against mobile/shared/protocol/ (the single Kotlin implementation, ADR-007) via :shared:testDebugUnitTest. Green on JVM. NOT executed on Kotlin/Native yet — see runner_gaps.",
+
+  "count_correction_2026_08_04": {
+    "headline": "case_total was 99. It is 110. NO VECTOR WAS ADDED, REMOVED, OR CHANGED — the manifest was simply counting inconsistently, and running the vectors for the first time exposed it.",
+    "what_was_wrong": "Per-file counts used different rules per file. key_schedule.json declared 11 (its `cases` array only, silently excluding 5 `property_assertions` and 3 `invalid`). display_jitter.json declared 8 (excluding 4 `property_assertions`). key_rotation.json declared 34, which matched no rule at all — the file holds 18 `cases` + 2 skew windows + 6 self-eid cases + 6 `invalid` + 1 `accepted_not_rejected` = 33.",
+    "why_it_mattered": "A manifest that misstates its own contents launders unexecuted cases into a green count. 'All 99 pass' was unverifiable by construction, because no consistent reading of these files yields 99.",
+    "the_rule_now": "A CASE is one named, independently executable assertion unit: every entry of `cases`, `invalid`, `property_assertions`, `skew_window_across_seam`, `self_eid_rejection.cases`, `accepted_not_rejected`. Pinned by VectorManifestTest, which recomputes the counts from the files on every CI run and fails on drift. It cannot silently rot again.",
+    "consumer_action": "40-contracts BLE wire v0.1 says 'conformance vectors: ... 99 cases'. That line needs an orchestrator edit to 110. No behaviour changed; no platform needs to re-run anything it had already passed."
+  },
 
   "unaffected_by_ADR_008": {
     "headline": "ADR-008 made account_key server-issued. ZERO existing vectors were regenerated. Not one hex value moved.",
@@ -21,22 +29,40 @@
     "A failing vector is a build failure, not a warning."
   ],
   "files": [
-    { "file": "frame_valid.json",     "covers": "SPEC.md §3",        "cases": 5,  "kind": "round-trip encode + decode" },
-    { "file": "frame_invalid.json",   "covers": "SPEC.md §3.6",      "cases": 22, "kind": "rejection, one error code per case, deterministic ordering" },
-    { "file": "adv_assembly.json",    "covers": "SPEC.md §5",        "cases": 10, "kind": "full AD assembly and parsing, both carriers, hostile inputs" },
-    { "file": "key_schedule.json",    "covers": "KEY_SCHEDULE.md §1", "cases": 11, "kind": "HKDF-SHA256 known-answer + rotation property assertions" },
-    { "file": "key_rotation.json",    "covers": "KEY_SCHEDULE.md §8, §9.6", "cases": 34, "kind": "account_key ring resolution, rotation seam, skew window across a seam, self-eid rejection, malformed rings", "added": "v0.1 (ADR-008 M4)" },
-    { "file": "banding.json",         "covers": "BANDING.md §2-§4",  "cases": 9,  "kind": "stepwise Kalman + normalisation + hysteresis sequences" },
-    { "file": "display_jitter.json",  "covers": "BANDING.md §6.2",   "cases": 8,  "kind": "HMAC-SHA256 known-answer for displayed metres" }
+    { "file": "frame_valid.json",     "covers": "SPEC.md §3",        "cases": 5,  "breakdown": { "cases": 5 },
+      "kind": "round-trip encode + decode" },
+    { "file": "frame_invalid.json",   "covers": "SPEC.md §3.6",      "cases": 22, "breakdown": { "cases": 22 },
+      "kind": "rejection, one error code per case, deterministic ordering" },
+    { "file": "adv_assembly.json",    "covers": "SPEC.md §5",        "cases": 10, "breakdown": { "cases": 10 },
+      "kind": "full AD assembly and parsing, both carriers, hostile inputs" },
+    { "file": "key_schedule.json",    "covers": "KEY_SCHEDULE.md §1", "cases": 19, "breakdown": { "cases": 11, "property_assertions": 5, "invalid": 3 },
+      "kind": "HKDF-SHA256 known-answer + rotation property assertions + fault cases" },
+    { "file": "key_rotation.json",    "covers": "KEY_SCHEDULE.md §8, §8.5.2, §9.6", "cases": 39, "breakdown": { "cases": 18, "skew_window_across_seam": 2, "self_eid_rejection.cases": 6, "destruction_at_seam": 6, "invalid": 6, "accepted_not_rejected": 1 },
+      "kind": "account_key ring resolution, rotation seam, skew window across a seam, self-eid rejection, superseded-key destruction, malformed rings", "added": "v0.1 (ADR-008 M4)" },
+    { "file": "banding.json",         "covers": "BANDING.md §2-§4",  "cases": 9,  "breakdown": { "cases": 9 },
+      "kind": "stepwise Kalman + normalisation + hysteresis sequences. 9 cases, 76 asserted steps." },
+    { "file": "display_jitter.json",  "covers": "BANDING.md §6.2",   "cases": 12, "breakdown": { "cases": 8, "property_assertions": 4 },
+      "kind": "HMAC-SHA256 known-answer for displayed metres + anti-averaging properties" }
   ],
-  "case_total": 99,
-  "case_total_note": "65 at v0, unchanged. 34 added in v0.1 for rules that did not exist before ADR-008. Nothing regenerated.",
+  "case_total": 116,
+  "case_total_note": "Recounted 2026-08-04 under one consistent rule (see count_correction_2026_08_04): that recount produced 110 with NO vector added, removed or edited. 116 is 110 plus the 6 genuinely new `destruction_at_seam` cases in key_rotation.json, added the same day to cover KEY_SCHEDULE.md §8.5.2, which was normative and unimplemented until then. Under the old inconsistent count the pre-existing set had been reported as 99.",
+  "counting_rule": "One case = one named, independently executable assertion unit. Sections counted: cases, invalid, property_assertions, skew_window_across_seam, self_eid_rejection.cases, destruction_at_seam, accepted_not_rejected.",
   "provenance": {
     "key_schedule.json": "HKDF-SHA256 via OpenSSL 3.5.6, first verified against RFC 5869 test case 1. Not hand-written.",
-    "key_rotation.json": "Ephemeral IDs are either reused verbatim from key_schedule.json or generated the same way (OpenSSL 3.5.6, HKDF-SHA256). The ring-selection expectations were then re-derived end-to-end by an independent reference implementation (Node crypto.hkdfSync) and all 34 agree. Not hand-written.",
+    "key_rotation.json": "Ephemeral IDs are either reused verbatim from key_schedule.json or generated the same way (OpenSSL 3.5.6, HKDF-SHA256). The ring-selection expectations were then re-derived end-to-end by an independent reference implementation (Node crypto.hkdfSync) and all agree. Not hand-written. The `destruction_at_seam` cases (2026-08-04) introduce NO new hex: every eid in them is one of the values already asserted elsewhere in the same file, queried a second time after a prune. That is deliberate — the new property is 'this value is no longer derivable', and it is only meaningful if the value is one we have independently proven WAS derivable.",
     "display_jitter.json": "HMAC-SHA256 via OpenSSL 3.5.6. Not hand-written.",
     "banding.json": "Generated by a reference implementation of BANDING.md executed over the input sequences. Not hand-written.",
     "frame_valid.json / frame_invalid.json / adv_assembly.json": "Constructed by hand from the byte layout in SPEC.md §3 and §5, cross-checked for length."
+  },
+  "runner": {
+    "implementation_under_test": "mobile/shared/src/commonMain/kotlin/com/radius/shared/protocol/ — the single Kotlin implementation both platforms consume (ADR-007).",
+    "runner_location": "mobile/shared/src/androidUnitTest/kotlin/com/radius/shared/protocol/vectors/",
+    "command": "cd mobile && ./gradlew :shared:testDebugUnitTest",
+    "reads_the_real_files": "The runner loads these JSON files FROM DISK through this manifest. It does not use an embedded or generated copy, because a copy can drift and a drifting copy destroys the only property that makes a vector file worth keeping: that a diff in it means a diff in BEHAVIOUR.",
+    "runner_gaps": [
+      "KOTLIN/NATIVE IS NOT COVERED. commonTest has no filesystem, so the runner lives in the JVM test source set. It therefore proves the SHARED implementation's arithmetic, but not that the Kotlin/Native backend produces identical results for it. Closing this needs a build-time codegen step that embeds the vector text into a generated commonTest source — a change to mobile/shared/build.gradle.kts, which is android-kotlin's file. HANDOFF raised.",
+      "There is no Mac (B4), so no iOS target compiles at all today. The gap above is scheduled, not urgent."
+    ]
   },
   "not_covered_here": [
     "Anything requiring a radio. These vectors test arithmetic and parsing only.",

@@ -1,0 +1,22 @@
+# devops/ci/gates/release_uuid_gate.allowlist
+#
+# One repo-relative file path per line. A file listed here is exempt from the SOURCE-SCAN phase of
+# release_uuid_gate.sh (it may still fail the ARTIFACT-SCAN phase — that one is authoritative and
+# is not consulted against this list on purpose. See that script's header.)
+#
+# RULES FOR ADDING A LINE HERE, all mandatory:
+#   1. The file must guard its use of 0xFDA9 behind something that provably does not compile into a
+#      release build — e.g. `if (BuildConfig.DEBUG) { ... }` on Android, where R8 dead-code-eliminates
+#      the false branch and its string constants under minifyReleaseWithR8 (verified: mobile/android/
+#      build.gradle.kts sets isMinifyEnabled = true for the release buildType).
+#   2. Add a code comment at the guarded site referencing this file, so the next reader finds the
+#      allowlist instead of assuming the literal is unreviewed.
+#   3. The PR adding the line must be reviewed by qa-test (this file is under **/tests/-equivalent
+#      ownership carve-out, devops/ci/ TEST+GATE stages — see root CLAUDE.md REPO MAP).
+#   4. If the guard mechanism is ever removed or weakened, remove the line in the same PR. A stale
+#      allowlist entry is a silent hole in decision 34's enforcement.
+#
+# Lines starting with # are comments. No entries yet — nothing in mobile/ references 0xFDA9 today
+# (verified 2026-08-04: grep across mobile/shared/src and mobile/android/src returns zero hits).
+# This file exists so the mechanism is ready the moment ble-protocol lands the codec and needs a
+# dev-only default service UUID.

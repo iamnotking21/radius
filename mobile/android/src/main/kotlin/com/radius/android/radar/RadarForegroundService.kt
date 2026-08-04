@@ -13,11 +13,22 @@ import javax.inject.Inject
 /**
  * Keeps the BLE radio alive while Radar is on, and — just as importantly — makes that visible.
  *
- * !! STUB. NOT FUNCTIONAL. NEVER RUN. !!
+ * !! STILL A STUB. NOT FUNCTIONAL. NEVER RUN ON HARDWARE. !!
  * The service starts, shows its notification and holds the injected [BleRadio]. It does NOT scan
- * or advertise yet: doing that requires the wire spec from `mobile/shared/protocol/`, which is
- * ble-protocol's to write and does not exist. Faking a scan loop here would produce a service that
- * burns battery and finds nothing, which is worse than a service that admits it does nothing.
+ * or advertise yet.
+ *
+ * The original blocker is gone — `mobile/shared/protocol/` has landed and the radio can now build
+ * and transmit a real frame — but the remaining gap is not a technical one. This is the PRODUCT
+ * path, and the product path needs a server-issued `ADVERTISE` role (`KEY_SCHEDULE.md` §2.2, §9.3)
+ * before it may transmit anything. [BleRadio] fails closed on exactly that, so wiring a
+ * `startAdvertising` call in here today would produce a service that scans, is refused permission
+ * to advertise, and finds only the debug harness. The honest thing is to leave it inert until
+ * there is an issuance path.
+ *
+ * The PHASE 0 measurement path does exist and is deliberately separate: see
+ * `mobile/android/src/debug/kotlin/com/radius/android/spike/`. It has its own foreground service
+ * so that a lab instrument and a product surface never share a notification, a lifecycle or a
+ * screenshot.
  *
  * WHY A FOREGROUND SERVICE AND NOT WORKMANAGER: WorkManager cannot hold a continuous BLE scan;
  * its minimum periodic interval is 15 minutes and Doze will defer even that. Radar needs a live
@@ -85,14 +96,20 @@ class RadarForegroundService : LifecycleService() {
             return
         }
 
-        // TODO(radar): everything that actually matters.
+        // TODO(radar): everything that actually matters. Updated 2026-08-04 — items 2 and 4 are
+        //  now DONE INSIDE THE RADIO rather than owed here, which changes what this file becomes.
         //   1. runtime permission preconditions (BLUETOOTH_SCAN / BLUETOOTH_ADVERTISE)
-        //   2. bleRadio.startScan(...) / startAdvertising(...) with the real service UUID from
-        //      mobile/shared/protocol/ — which does not exist yet
-        //   3. adaptive duty controller: stationary detection, <20% battery, no peer for 10min
-        //   4. ephemeral id rotation every 15 min, with MAC/RPA rotation in step (invariant 5)
+        //   2. DONE in BleRadio: startScan/startAdvertising against the real service UUID and the
+        //      real 19-byte frame. Blocked here only on a server-issued ADVERTISE role.
+        //   3. adaptive duty controller: stationary detection, <20% battery, no peer for 10min.
+        //      The radio OBEYS a DutyProfile; nothing yet DECIDES one. That decision belongs here.
+        //   4. DONE in BleRadio: the 15-minute UTC epoch loop, stop -> re-derive -> rebuild ->
+        //      start (KEY_SCHEDULE.md §4.2). Whether the controller actually rotates the RPA in
+        //      response is B8 and is UNMEASURED on every handset.
         //   5. wake-lock policy — and measuring, not guessing, whether one is needed at all
         //   6. battery instrumentation for the <4%/hr CI gate (Battery Historian trace on the PR)
+        //   7. detecting that an OEM killed us and saying so. The dishonest failure mode is the
+        //      dangerous one: the user believes they are discoverable and is not.
     }
 
     private fun stopRadio() {

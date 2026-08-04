@@ -32,7 +32,37 @@ class RawSightingTest {
         assertFalse(rendered.contains("0A"), "raw payload byte leaked into toString(): $rendered")
         assertFalse(rendered.contains("10, 11"), "raw payload leaked into toString(): $rendered")
         assertTrue(rendered.contains("redacted"), "toString() must state that it redacted: $rendered")
-        assertTrue(rendered.contains("-63"), "rssi is not sensitive and is useful in logs")
+    }
+
+    @Test
+    fun toString_never_leaks_the_rssi_either() {
+        // DECISION 28. This test previously asserted the OPPOSITE — that the RSSI *was* printed,
+        // on the belief that it "is not sensitive and is useful in logs". Both halves were wrong,
+        // and the test was actively holding the leak in place, which is the worst thing a test can
+        // do. Inverted deliberately rather than deleted, so the history is visible in the diff.
+        //
+        // BANDING.md §6.3: raw RSSI is location data. Three receivers multilaterate to a POSITION.
+        // One receiver plus time and motion is nearly as good. And sub-band resolution is stable
+        // enough over short intervals to link identities ACROSS an ephemeral-id rotation, which
+        // partially undoes the key schedule — so redacting the pseudonym while printing the
+        // distance-proxy beside it, on a millisecond timestamp, achieves very little.
+        //
+        // RawSighting is the high-frequency object on the onSighting path: the one most likely to
+        // be interpolated into a debug log and attached to a crash report as context.
+        val rendered = RawSighting(payload, rssiDbm = -63, observedAtEpochMs = 1_754_000_000_000L)
+            .toString()
+
+        assertFalse(rendered.contains("-63"), "raw RSSI leaked into toString(): $rendered")
+        assertFalse(rendered.contains("63"), "raw RSSI leaked into toString(): $rendered")
+
+        // A three-figure negative and a positive dBm must both stay out — a future refactor that
+        // formats the value differently must not sneak past a single hardcoded fixture.
+        assertFalse(
+            RawSighting(payload, rssiDbm = -101, observedAtEpochMs = 1L).toString().contains("101"),
+        )
+        assertFalse(
+            RawSighting(payload, rssiDbm = 7, observedAtEpochMs = 2L).toString().contains("7"),
+        )
     }
 
     @Test

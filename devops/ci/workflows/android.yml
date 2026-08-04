@@ -1,0 +1,176 @@
+# devops/ci/workflows/android.yml
+#
+# qa-test's TEST + GATE stage definitions for mobile/ (Android, Phase 0 — decision 33). Gitea
+# Actions syntax (GitHub-Actions-compatible). Owner boundary, root CLAUDE.md REPO MAP: qa-test owns
+# the TEST + GATE stages here; devops-tencent owns the RUNNER + infra/deploy stages.
+#
+# HANDOFF TO devops-tencent, not resolved by this file:
+#   Gitea Actions discovers workflows at `.gitea/workflows/*.yml` at the repo root by default (same
+#   convention as GitHub Actions' `.github/workflows/`). This file lives in devops/ci/ instead,
+#   per the repo map carve-out ("devops/ci/ TEST stages -> qa-test"). Someone with runner/infra
+#   ownership needs to either (a) point the Gitea instance's workflow discovery at devops/ci/
+#   workflows/, or (b) symlink/sync this file into .gitea/workflows/ as part of the runner setup.
+#   Until one of those happens, this file is a correct, ready DEFINITION that is not yet WIRED to
+#   actually execute on push — flagged here so it is not mistaken for "already running."
+#   `runs-on:` below uses a generic label; devops-tencent's runner definition determines the real
+#   label(s) available on the self-hosted Gitea Actions runner (root CLAUDE.md "CI: Gitea Actions
+#   self-host").
+#
+# WHAT IS DELIBERATELY NOT HERE: anything BLE-behavioural (discovery latency, RSSI, RPA co-rotation,
+# real battery draw). Those require real hardware — see mobile/tests/PHASE0_SPIKE_MATRIX.md — and a
+# CI runner is not real hardware. The BATTERY GATE below enforces that distinction by failing loudly
+# rather than by skipping, on purpose, every run until the hardware rig exists.
+
+name: mobile-android-ci
+
+on:
+  push:
+    paths:
+      - "mobile/**"
+      - "devops/ci/**"
+  pull_request:
+    paths:
+      - "mobile/**"
+      - "devops/ci/**"
+
+env:
+  # mobile/CLAUDE.md + qa-test task brief: JDK path is not inherited from the shell on the founder's
+  # dev machine. devops-tencent's runner image is expected to provide JDK 21 on PATH directly; this
+  # JAVA_HOME is the known-good fallback used during Phase 0 bring-up and should be revisited once
+  # the runner image is finalised (HANDOFF).
+  JAVA_HOME: /opt/jdk-21 # placeholder — devops-tencent: point this at the runner's real JDK 21 path
+
+jobs:
+  # ---- fast gates: no build required ----------------------------------------------------------
+  gate-selftests:
+    runs-on: [self-hosted, linux] # HANDOFF: confirm the real label with devops-tencent
+    steps:
+      - uses: actions/checkout@v4
+      - name: qa-test gate self-tests (synthetic fixtures, no Gradle)
+        run: bash devops/ci/tests/gates/run_all.sh
+
+  no-map-no-bearing-gate:
+    runs-on: [self-hosted, linux]
+    steps:
+      - uses: actions/checkout@v4
+      - name: safety invariant 1 — no map, no lat/lng, no bearing API in mobile source
+        run: bash devops/ci/gates/no_map_no_bearing_gate.sh
+
+  # ---- security review gates (decisions 43, 41 — blocker B11) -----------------------------------
+  internal-escape-gate:
+    runs-on: [self-hosted, linux]
+    steps:
+      - uses: actions/checkout@v4
+      - name: decision 43 / B11 — no mangled internal-JVM-symbol reference outside test source
+        run: bash devops/ci/gates/internal_escape_gate.sh
+
+  the-line-gate:
+    runs-on: [self-hosted, linux]
+    steps:
+      - uses: actions/checkout@v4
+      - name: decision 41 — Crypto.kt's import/top-level surface must match the pinned set
+        run: bash devops/ci/gates/the_line_gate.sh
+
+  # ---- release UUID gate: source phase runs standalone, artifact phase needs a release build ----
+  release-uuid-gate-source:
+    runs-on: [self-hosted, linux]
+    steps:
+      - uses: actions/checkout@v4
+      - name: decision 34 — 0xFDA9 must not be in release-shipping source
+        run: bash devops/ci/gates/release_uuid_gate.sh --skip-artifact
+
+  # ---- lint + unit test: tasks that exist today (verified 2026-08-04) --------------------------
+  lint:
+    runs-on: [self-hosted, linux]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: "21" }
+      - name: ":shared:lintDebug + :android:lintDebug"
+        working-directory: mobile
+        run: ./gradlew.bat :shared:lintDebug :android:lintDebug --no-daemon
+        # GREEN at last sweep (2026-08-04). Earlier in development :shared:lintDebug failed with 4
+        # MissingPermission errors in BleRadio.android.kt — real, reproduced, not a flake — fixed
+        # concurrently by another agent. See devops/ci/README.md "current gate status" before
+        # trusting either state; the codebase is under active parallel development.
+
+  unit-test:
+    runs-on: [self-hosted, linux]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: "21" }
+      - name: ":shared:testDebugUnitTest + :android:testDebugUnitTest"
+        working-directory: mobile
+        run: ./gradlew.bat :shared:testDebugUnitTest :android:testDebugUnitTest --no-daemon
+        # :android:testDebugUnitTest is expected NO-SOURCE today (no unit tests under mobile/android/
+        # yet) — Gradle treats that as a pass, which is correct, not a gap this job should paper over
+        # with a fake assertion. It becomes a real check the day android-kotlin adds test source.
+
+  # ---- conformance gate: manifest integrity (always) + codec execution (once wired) -------------
+  conformance-gate:
+    runs-on: [self-hosted, linux]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: "21" }
+      - uses: actions/setup-node@v4
+        with: { node-version: "20" }
+      - name: vectors manifest pre-check + codec vector execution (Android only — iOS DEFERRED)
+        run: bash devops/ci/gates/conformance_gate.sh
+        # GREEN at last sweep (2026-08-04): 56/56 unit tests incl. VectorManifestTest (3/3), which
+        # reported "116 executable cases across 7 files" — a LIVE number, not hardcoded anywhere in
+        # this gate (see conformance_gate.sh header: it moved 98 -> 99-wrong -> 110 -> 116 in one
+        # session). Earlier in development this failed for two independent, real reasons (a manifest
+        # miscount in mobile/protocol/vectors/index.json, then a compile break in the test harness) —
+        # both fixed concurrently by ble-protocol. See devops/ci/README.md before trusting either
+        # state; the codebase is under active parallel development.
+
+  # ---- release artifact gate: needs an assembled release build -----------------------------------
+  release-uuid-gate-artifact:
+    runs-on: [self-hosted, linux]
+    needs: [release-uuid-gate-source]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: "21" }
+      - name: assemble release APK
+        working-directory: mobile
+        run: ./gradlew.bat :android:assembleRelease --no-daemon
+      - name: decision 34 — 0xFDA9 must not be in the assembled release artifact (string leaks only — see gate header)
+        run: bash devops/ci/gates/release_uuid_gate.sh --skip-source
+
+  # ---- battery gate: intentionally, permanently red until the hardware rig exists ---------------
+  battery-gate:
+    runs-on: [self-hosted, linux]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: "20" }
+      - name: battery contract (<4%/hr scanning, <1%/day idle) — no hardware rig in CI yet
+        run: bash devops/ci/gates/battery_gate.sh --results "${BATTERY_RESULTS_JSON:-/nonexistent}"
+        continue-on-error: false
+        # DO NOT add continue-on-error: true here to make this job "green". A gate that always
+        # fails because there is nothing to measure is supposed to always fail — see
+        # devops/ci/gates/battery_gate.sh's header and devops/ci/README.md. The RELEASE GATE job
+        # below depends on this being red until devops-tencent's hardware rig produces real numbers.
+
+  # ---- the actual release gate: everything above must be green ----------------------------------
+  release-gate:
+    runs-on: [self-hosted, linux]
+    needs:
+      [
+        gate-selftests,
+        no-map-no-bearing-gate,
+        internal-escape-gate,
+        the-line-gate,
+        release-uuid-gate-source,
+        release-uuid-gate-artifact,
+        lint,
+        unit-test,
+        conformance-gate,
+        battery-gate,
+      ]
+    steps:
+      - name: all release gates green
+        run: echo "RELEASE GATE PASSED — see root CLAUDE.md RELEASE GATE checklist for the non-CI items (a11y pass, security-privacy PASS, runbook current, rollback tested) this job does not cover."

@@ -1,6 +1,7 @@
 package com.radius.shared.domain.radar
 
 import com.radius.shared.domain.UlidString
+import com.radius.shared.protocol.Band
 import kotlinx.coroutines.flow.Flow
 
 /**
@@ -10,26 +11,23 @@ import kotlinx.coroutines.flow.Flow
  * types. Read the notes before adding a field.
  */
 
-/**
- * Distance is FOUR BANDS. Never a number, never a continuum. Safety invariant 2.
- *
- * Thresholds (root CLAUDE.md HARD NUMBERS), applied with hysteresis so a node does not flicker
- * between bands on normal RSSI noise:
- *   HERE   ≥ -55 dBm
- *   CLOSE  ≥ -70 dBm
- *   AROUND ≥ -82 dBm
- *   EDGE   ≥ -95 dBm
- *
- * The banding + hysteresis implementation is shared core logic and lands with the Radar task.
- * It has exactly one implementation — that is the point of ADR-007. Do not reimplement it in
- * Swift or in Compose "just for the preview".
- */
-public enum class ProximityBand {
-    HERE,
-    CLOSE,
-    AROUND,
-    EDGE,
-}
+// ---------------------------------------------------------------------------------------------
+// `ProximityBand` IS DELETED. ORCHESTRATOR RULING D3, gated.
+//
+// The band type is now `com.radius.shared.protocol.Band`, ble-protocol's, and there is exactly one
+// of them in the shared module. `ProximityBand` carried the four DISPLAYABLE bands only; the
+// banding pipeline also produces UNKNOWN (fewer than WARMUP_SAMPLES accepted, `BANDING.md` §5) and
+// OUT_OF_RANGE (adjusted < -95 dBm). Two band enums inside one shared module is the cross-platform
+// divergence ADR-007 exists to prevent, reintroduced inside the very module that exists to prevent
+// it — the conversion function between them would have had to invent an answer for two real states
+// that the destination type could not express, at the boundary where invariant 2 lives.
+//
+// CONSUMER OBLIGATION, and it is not a formality: UNKNOWN and OUT_OF_RANGE are REAL STATES and must
+// be rendered honestly or the peer omitted. They MUST NOT be folded into EDGE to make a `when`
+// exhaustive. EDGE means "somewhere around, roughly 15-40 m"; UNKNOWN means "we have not got enough
+// samples to say". Displaying the second as the first tells a user someone is present when we do
+// not know that, which is invariant 2 delivering a false answer in the direction that matters.
+// ---------------------------------------------------------------------------------------------
 
 /**
  * One person on the radar.
@@ -46,17 +44,23 @@ public enum class ProximityBand {
  *   Invariant 3. It encodes nothing. It is reseeded every session precisely so that a user cannot
  *   triangulate by walking. Never derive it from signal strength, arrival order, or anything else
  *   correlated with the physical world.
- * @property displayedMetres what the UI shows. Band midpoint plus jitter, produced by shared core.
- *   It is a hedged illustration, not a measurement, and the copy around it must say so.
+ * @property band `protocol.Band`. MAY be [Band.UNKNOWN] or [Band.OUT_OF_RANGE] — see the D3 note
+ *   at the top of this file. A consumer that cannot render those two honestly must omit the node,
+ *   not promote it to [Band.EDGE].
+ * @property displayedMetres what the UI shows, or `null` when the band is not displayable
+ *   ([Band.UNKNOWN], [Band.OUT_OF_RANGE]). Band midpoint plus jitter, produced by shared core. It
+ *   is a hedged illustration, not a measurement, and the copy around it must say so. Nullable
+ *   because `PeerReading.displayMetres` is, and because HERE has no metre figure at all —
+ *   `BANDING.md` §6.2: "at that range a metre figure is theatre".
  * @property isVerified Radar is verified-accounts-only (invariant 6). An unverified node should
  *   never have been resolved in the first place; this flag exists so the UI can fail loudly rather
  *   than silently if one appears.
  */
 public class RadarNode(
     public val nodeId: String,
-    public val band: ProximityBand,
+    public val band: Band,
     public val displayAngleTurns: Float,
-    public val displayedMetres: Int,
+    public val displayedMetres: Int?,
     public val lastSeenEpochMs: Long,
     public val isVerified: Boolean,
     public val waveState: WaveState,
@@ -135,6 +139,6 @@ public class Encounter(
     public val peerAccountId: UlidString?,
     public val firstSeenEpochMs: Long,
     public val lastSeenEpochMs: Long,
-    public val closestBand: ProximityBand,
+    public val closestBand: Band,
     public val expiresAtEpochMs: Long,
 )

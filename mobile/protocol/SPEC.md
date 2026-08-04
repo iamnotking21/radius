@@ -750,7 +750,19 @@ linkability structure.
 ## 8. Shared-module API contract (normative shape, not source)
 
 `mobile/shared/protocol/` exposes this and nothing wider. Written as
-language-neutral signatures; the Kotlin lands in a later task.
+language-neutral signatures.
+
+> **IMPLEMENTED 2026-08-04.** The Kotlin has landed at
+> `mobile/shared/src/commonMain/kotlin/com/radius/shared/protocol/` (package
+> `com.radius.shared.protocol` — the `mobile/shared/protocol/` path in
+> `40-contracts` is an ownership carve-out, and it is realised as a package
+> subtree inside the module's own source set so that no change to
+> `mobile/shared/build.gradle.kts` is required). All 116 conformance cases
+> execute against it via `:shared:testDebugUnitTest` and pass — 110, plus the 6
+> `destruction_at_seam` cases added on the same day when a security review found
+> `KEY_SCHEDULE.md` §8.5.2 normative and unimplemented. §8.2 records the three
+> places where the landed surface differs from the shape written below; each needs
+> an orchestrator gate.
 
 ```
 BleFrame            = { version: u8, ephemeralId: bytes[16],
@@ -774,13 +786,16 @@ PeerReading = { band: Band, confidence: Confidence, displayMetres: int? }
 adjusted RSSI, not a "debug" variant behind a flag. See `BANDING.md` §6 for why
 this is a hard boundary rather than an API preference.
 
-### 8.1 PROPOSED additions for ADR-008 — NOT YET GATED
+### 8.1 ADR-008 additions — GATED 2026-08-04, IMPLEMENTED 2026-08-04
 
 The key ring (`KEY_SCHEDULE.md` §8) and the advertising role (§9.3) have to
 reach the shared module somehow, and the shared public API is a gated contract
-owned outside this document (`40-contracts` SHARED). **The following is a
-proposal to the orchestrator, not a normative surface. No consumer may implement
-against it until it is gated.**
+owned outside this document (`40-contracts` SHARED). **This was approved as-is
+in `40-contracts` "mobile/shared API v0.1", and is now normative and
+implemented.** The two structural choices the gate called out — `ephemeralId()`
+taking `(ring, day, epoch)` rather than a resolved key, and `AdvertiseRole`
+defaulting to `SCAN_ONLY` — are kept verbatim in the Kotlin. Do not "simplify"
+either; see §8.2 for the three places the implementation does deviate.
 
 ```
 KeyRingEntry     = { kid: u32, accountKey: bytes[32], effDay: u32, effEpoch: u16 }
@@ -791,11 +806,15 @@ activeKid(KeyRing, day: u32, epoch: u16) -> Result<u32, KeyError>
 ephemeralId(KeyRing, day: u32, epoch: u16) -> Result<bytes[16], KeyError>
 isOwnEphemeralId(KeyRing, day: u32, epoch: u16, observed: bytes[16]) -> bool   // §9.6
 
+KeyRing.pruneSupersededAt(day: u32, epoch: u16) -> count           // KEY_SCHEDULE §8.5.2
+KeyRingEntry.destroyKeyMaterial()                                  // irreversible
+KeyRingEntry.isDestroyed -> bool
+
 KeyError = E_NO_ACTIVE_KEY | E_KEY_RING_NOT_MONOTONIC
          | E_EPOCH_INDEX_OUT_OF_RANGE | E_ACCOUNT_KEY_LENGTH
 ```
 
-Three shape notes, each of which is a safety property rather than taste:
+Four shape notes, each of which is a safety property rather than taste:
 
 - **`accountKey` crosses as `ByteArray`, never `String`.** Same reasoning as
   ruling R-C for `ephemeral_id` (`40-contracts`): a hex `String` is log-shaped,
@@ -808,6 +827,67 @@ Three shape notes, each of which is a safety property rather than taste:
 - **`AdvertiseRole` is an enum defaulting to `SCAN_ONLY`,** not a boolean
   defaulting to permissive. Same reasoning as ruling R-B for
   `setVisibility`/`RadarVisibility`.
+- **Key destruction is on the contract, not an implementation detail.**
+  `pruneSupersededAt` is the caller's obligation under `KEY_SCHEDULE.md` §8.5.2
+  and must be driven from the epoch-boundary advertising restart (§4.2) by
+  whichever platform owns the key ring's lifetime. There is no accessor that
+  returns `account_key` bytes on the public surface at all — reading key material
+  is `internal` and goes through a use-and-zero callback, so the only public verb
+  on a key is *destroy it*. **`NEW-CONSUMER-VISIBLE, NEEDS A GATE`**: both
+  platforms must call it, and a platform that does not simply retains every key
+  it has ever held.
+
+### 8.2 Where the landed Kotlin differs from §8 — THREE ITEMS, ALL NEED A GATE
+
+Written down rather than absorbed silently, because the public surface of
+`mobile/shared` is a gated contract with two consumers.
+
+**1. One error enum, not two.** §8 named `DecodeError` and `KeyError`;
+`vectors/index.json` names a single flat `error_codes` list of thirteen. The
+vectors win. A conformance case says `"expect_error": "E_SHORT_FRAME"`, and that
+string has to map to exactly one constant or the runner has to guess which enum
+it lives in. Landed as `ProtocolError`, thirteen constants, the union of both.
+`DecodeError` and `KeyError` are now names for subsets of it, not types.
+
+**2. `ProtocolResult<T>` instead of `Result<V, E>`.** Kotlin has no two-type
+result and `kotlin.Result` carries a `Throwable`. Landed as a sealed
+`ProtocolResult<T>` = `Success(value)` | `Failure(error: ProtocolError)`.
+Deliberately not exceptions: a malformed advertisement is the ORDINARY case — a
+scan in a busy place is a continuous stream of other vendors' beacons — and an
+exception crossing the Kotlin/Native boundary is a crash, not a `throws`.
+Owed at iOS un-deferral: a generic sealed class exports to ObjC as
+`ProtocolResult<AnyObject>`. If ios-swift wants concrete non-generic result
+types, that is a gated change, not a unilateral one.
+
+**3. `Band` duplicates `domain.radar.ProximityBand`, and one of them must die.**
+`ProximityBand` has only the four displayable bands; the pipeline needs
+`UNKNOWN` (below warm-up, MUST NOT be displayed) and `OUT_OF_RANGE`. Two band
+enums in one module is precisely the divergence ADR-007 exists to prevent. The
+right fix is to delete `ProximityBand` and have the radar domain consume
+`protocol.Band` — that touches android-kotlin's files, so it is a **HANDOFF**,
+not something ble-protocol does. Until it happens, the module contains two
+answers to "what band is this peer in", which is a real defect and not a
+cosmetic one.
+
+Also landed, beyond §8's list, and each justified where it is declared:
+`BleFrameCodec` (`isLegalTxPowerCal`, `legalTxPowerCalDbm`, `clampTxPowerCal` —
+transmitters MUST clamp to the seven-value grid, so the grid has to be
+reachable), `AdvertisementCodec` (`SERVICE_UUID16`, `buildAdvertisement`,
+`parseAdvertisement`), `Carrier`, `KeySchedule.dayIndex`/`epochIndex`/
+`validateRing`, `BandingPipeline`, `Confidence`, `PeerReading`.
+`DisplayJitter` is **internal**: the only supported way to obtain a metre value
+is through `BandingPipeline`, which cannot be handed an RSSI-derived seed.
+
+**What `internal` means here, corrected 2026-08-04.** Kotlin `internal` is a
+COMPILE-TIME property of the Kotlin compiler, not JVM access control. On
+Kotlin/Native it is enforced in the binary; on the JVM the compiler emits a
+`public` method with a mangled name, and a foreign compilation unit can call
+`someInternalFn$shared_debug()` with no reflection and no friend path — this was
+demonstrated in review against `conformanceState`, `accountKey`, `dailyKey` and
+`ephemeralIdFor`. So `internal` in this spec means **"off the contract, and loud
+when you cross it"**, never "unreachable on Android". Nothing that must be
+genuinely unreachable may rest on the keyword; key material rests on
+use-and-zero plus destruction at the seam instead.
 
 ---
 

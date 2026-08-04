@@ -87,8 +87,25 @@ dependencies {
     implementation(libs.androidx.lifecycle.runtime)
     implementation(libs.androidx.lifecycle.service)
     implementation(libs.androidx.activity.compose)
-    implementation(libs.androidx.work.runtime)
     implementation(libs.kotlinx.coroutines.android)
+
+    // WORKMANAGER IS DELIBERATELY ABSENT. Removed 2026-08-04; it was declared and never used.
+    //
+    // It is not a free unused dependency: androidx.work MERGES THREE PERMISSIONS into our manifest
+    // without anyone typing them — WAKE_LOCK, ACCESS_NETWORK_STATE and RECEIVE_BOOT_COMPLETED.
+    // Verified in build/intermediates/packaged_manifests/ for both variants before removal, and
+    // verified gone after. For a dating app that stores no coordinates, ACCESS_NETWORK_STATE
+    // alongside NO network permission at all reads oddly to a store reviewer, and
+    // RECEIVE_BOOT_COMPLETED is a background-persistence signal we were not asking for and got
+    // nothing for. The permission list should be something we chose, not something that
+    // accumulated.
+    //
+    // WHEN IT COMES BACK — and it will, for the retention/purge job (encounters 30d, free tier
+    // 24h, then HARD delete) — reintroduce it WITH `tools:node="remove"` entries in the manifest
+    // for whichever of the three we still do not want, rather than accepting all three silently.
+    // Radar itself must never use WorkManager: its minimum periodic interval is 15 minutes and
+    // Doze defers even that, so it cannot hold a continuous BLE scan. That is the foreground
+    // service's job. See RadarForegroundService.
 
     implementation(platform(libs.compose.bom))
     implementation(libs.compose.ui)

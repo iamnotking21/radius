@@ -945,6 +945,53 @@ epoch, still 30 minutes. Rotation neither widens nor narrows it.
 2. **The superseded `account_key` is destroyed on the device at the seam.** The
    ring retains the entry's `kid` and `effective_from` for ordering, and zeroes
    the key material. A device holds at most one active key and one pending key.
+
+   *Precise rule:* destroy every entry **strictly older than the entry active at
+   the current `(d, e)`**. Not "the previous one" — a key that was active for a
+   single epoch between two rotations is superseded too. The active entry and any
+   pending entry are never destroyed, which is what makes this safe to drive from
+   the device's own clock: a clock that runs fast destroys only history it was
+   required to destroy anyway and never stops the device advertising. Nothing is
+   destroyed when the ring does not validate, or when the queried instant is
+   before the ring's first entry — destruction is irreversible, and it must not
+   act on input we have just declared untrustworthy or on a rewound clock.
+
+   *A destroyed entry resolves to `E_NO_ACTIVE_KEY`*, the same fault as a query
+   before the ring began, because from the resolver's side they are the same
+   state: no key here. It MUST NOT derive from the zeroed bytes — that would
+   produce a valid-looking, wrong, and identical-for-every-pruned-device
+   identifier.
+
+   *What this is worth, and what it is not.* §2.3 is explicit that the Keystore
+   wrap gives no protection against a compromised running process or a rooted
+   device: HKDF-Extract needs the raw key in memory. Retaining every key ever
+   issued therefore means one in-process compromise yields **retroactive**
+   derivation across the device's whole rotation history — the exact blast radius
+   §8.1 says rotation exists to bound. Destroying at the seam is what makes §8.1's
+   "rotation bounds future exposure" true on the client instead of aspirational.
+   It is **best effort at the memory level**: `fill(0)` overwrites the buffer we
+   hold, and a moving garbage collector may already have copied it somewhere we
+   cannot name. The property the protocol can honestly state is *the derivation is
+   gone*, and that is what `vectors/key_rotation.json → destruction_at_seam`
+   proves — the same `(d, e)` yields its known eid before the prune and
+   `E_NO_ACTIVE_KEY` after it.
+
+   *Interaction with §9.6, stated rather than discovered.* The accepted window is
+   `{e-1, e, e+1}`, and at a seam `e-1` belongs to the key just destroyed. So for
+   one epoch after a rotation a device cannot re-derive, and therefore cannot
+   recognise, its own previous-epoch `ephemeral_id`: a reflected or relayed copy
+   of it is passed to resolution instead of being dropped by §9.6. In practice it
+   then fails to resolve, because a device does not carry its own account among
+   its resolution candidates — but §9.6 exists precisely so that the outcome does
+   not *depend* on that, so the loss is real and is stated rather than explained
+   away. **This is accepted deliberately.** §9.6 self-rejection is defence in depth against a rare
+   event (reflection, a relay, a twin device); destruction at the seam is a
+   normative rule against a permanent exposure. Holding the superseded key 15
+   minutes longer to keep a duplicate-broadcast detector alive would spend exactly
+   the property the destruction buys, and would mean the old key is still present
+   during every rotation — the one moment it is most worth not having. Pinned by
+   the `self-eid-rejection-loses-the-previous-epoch-after-a-seam-prune` vector so
+   that a future reader meets it as a decision rather than as a surprise.
 3. All caches keyed by peer address are already cleared at every boundary (§4.2).
    Nothing additional is required at a seam — which is the point.
 4. Own `daily_key`s derived from the superseded key are deleted at the seam.

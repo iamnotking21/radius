@@ -1,0 +1,72 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  DEBUG-ONLY MANIFEST. Merged into the main manifest for the debug variant and NOT for release.
+
+  This file is where the Phase 0 spike harness becomes reachable. Two things about it are
+  load-bearing:
+
+  1. THE INTERNET PERMISSION IS DECLARED NOWHERE — not here, not in the main manifest, and not by
+     any library we depend on. Verified against the merged manifest for BOTH variants. That absence
+     is the enforcement of 40-contracts P1: an observed ephemeral_id must never reach a server on
+     any endpoint, "including diagnostics". The spike build cannot open a socket.
+
+     If a future diff grants it, that one line is the most important line in the diff and must be
+     argued for on its own rather than carried along with something else.
+
+     The CI check to write is a grep for a `uses-permission` element naming it, over the MERGED
+     manifest of both variants — not over source. Source-only greps miss a permission a library
+     merges in, which is exactly how ACCESS_NETWORK_STATE, WAKE_LOCK and RECEIVE_BOOT_COMPLETED
+     arrived from an unused androidx.work dependency without anyone typing them. That dependency
+     has since been removed and those three are gone; the lesson about WHERE to audit is the part
+     worth keeping. The fully-qualified permission name is deliberately not written out in this
+     comment, so a naive grep does not match the paragraph explaining that we do not use it.
+
+  2. THE HARNESS IS A SEPARATE LAUNCHER ENTRY, not a hidden gesture in the product UI. A lab
+     instrument that looks like the product is one someone screenshots into a design review, and a
+     secret tap sequence is one a person in a car park has to remember at 9pm.
+
+  Everything here disappears from a release build because `src/debug/` is not part of it.
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <application
+        tools:ignore="HardcodedDebuggableApplication">
+
+        <!--
+          Exported so it can be launched from a laptop, which is how the long captures will be
+          driven:
+            adb shell am start -n com.radius.android.debug/com.radius.android.spike.SpikeActivity
+          Exporting a debug-only activity in a debug-only APK is acceptable; it does not exist in
+          anything a user installs.
+        -->
+        <activity
+            android:name=".spike.SpikeActivity"
+            android:exported="true"
+            android:label="Radius Spike"
+            android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|uiMode|fontScale"
+            android:launchMode="singleTask"
+            android:theme="@style/Theme.Radius">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!--
+          `connectedDevice`, NOT `location`. The main manifest asserts neverForLocation on
+          BLUETOOTH_SCAN; declaring a location FGS type here would contradict it and be untrue,
+          even in a debug build. Especially in a debug build — this is the one that runs for 90
+          minutes on somebody's personal handset.
+
+          stopWithTask is left at its default (true) deliberately, unlike the product service:
+          swiping the instrument away should stop the instrument.
+        -->
+        <service
+            android:name=".spike.SpikeForegroundService"
+            android:exported="false"
+            android:foregroundServiceType="connectedDevice" />
+
+    </application>
+
+</manifest>

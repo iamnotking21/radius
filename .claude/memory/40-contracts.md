@@ -80,7 +80,35 @@ banding: Kalman Q=1.0 R=16.0, warmup 3, stable 10, outlier gate 20dB, 3 consecut
 RAW/FILTERED/ADJUSTED RSSI MUST NOT cross the shared-module boundary, reach the server,
   or appear in logs/analytics/debug builds. RSSI IS LOCATION DATA (3 receivers ⇒ multilateration).
   server gets (account, band, epoch). nothing finer. no bearing, ever, anywhere.
-conformance vectors: mobile/protocol/vectors/*.json + index.json manifest. 99 cases.
+conformance vectors: mobile/protocol/vectors/*.json + index.json manifest. 116 EXECUTABLE cases.
+GATED 2026-08-04 — `EpochBoundaryListener` + `BleRadio.setEpochBoundaryListener`. both actuals
+  implement it (iOS keys the ticker off listener-registration, holding no scan state). the radio
+  ANNOUNCES the boundary; whoever holds the ring acts. the radio still never learns what a key is —
+  deliberately not re-coupled to the ring in order to fix this.
+CALLER OBLIGATION, GATED — `KeyRing.pruneSupersededAt(day, epoch)` MUST be driven by every platform
+  from a DEVICE-SCOPED epoch ticker: scanning OR advertising, and across adapter-off.
+  NOT the advertising restart — that was the orchestrator's original instruction and it was WRONG.
+  frameForEpoch only runs on an advertiser; decision 35 makes everything else SCAN_ONLY; a
+  scan-only device still holds a full ring. advertising-scoped pruning fixes the HIGH on one device
+  per account and leaves it live on the entire rest of the fleet.
+  THE ZEROIZATION FIX IS INERT WITHOUT THIS CALL.
+  a platform that omits it retains every key it has ever held ⇒ one in-process compromise yields
+  retroactive derivation across the device's entire rotation history, which is exactly the blast
+  radius ADR-008 M4 was bought to bound. android-kotlin: required now. ios-swift: at un-deferral.
+  ACCEPTED COST, pinned by vector and reconciled in KEY_SCHEDULE §8.5.2 vs §9.6: the accepted window
+  is {e-1,e,e+1}, so for ONE epoch after a rotation the device cannot recognise its own previous-
+  epoch eid and a reflected/relayed copy goes to resolution instead of being dropped. taken
+  deliberately — §9.6 is defence-in-depth against a rare event; holding the old key 15 min longer
+  means it is still present during every rotation, the one moment it is most worth not having.
+  was declared 99 — the manifest was WRONG, not the vectors. no vector added/removed/edited.
+  per-file counts had used different rules per file (some silently excluded property_assertions
+  and invalid blocks; key_rotation's 34 matched no reading of its own file). "all 99 pass" was
+  unverifiable BY CONSTRUCTION. found by executing them, which is the point.
+  VectorManifestTest now RECOMPUTES counts from the files every CI run ⇒ cannot rot silently again.
+  suite is PROVEN ABLE TO GO RED: two mutations injected into the real impl, both caught by the
+  exact cases claiming to pin them (outlier-gate livelock; cached-kid, which reproduced the literal
+  trap value key_rotation.json names by hand). a suite that cannot fail is decoration.
+  +11 published crypto KATs (FIPS 180-4 incl padding boundaries + 1MB msg, RFC 4231, RFC 5869).
   ADR-008 regenerated ZERO of the original 65 — provenance is not an HKDF input, so the function
   is unchanged. regenerating them would have destroyed the only property that makes a vector file
   useful: that a diff means a BEHAVIOUR change. all 11 original KATs re-derived on a second
@@ -138,6 +166,19 @@ SURFACE: core{RadiusConfig, RadiusCore(internal ctor), FlowAdapter, RadiusCancel
   ThreadItem, DeliveryState, CallOutcome, ThreadsInbox}
   `RadiusCancellable` is prefixed deliberately — bare `Cancellable` collides with Combine's.
   `UlidString` is a plain typealias: Kotlin value classes export badly to ObjC.
+
+SPEC §8.2 DEVIATIONS — ALL THREE GATED AND APPROVED 2026-08-04:
+  D1 ONE flat `ProtocolError` enum (13 codes), not DecodeError + KeyError. vectors assert
+     "expect_error":"E_SHORT_FRAME" — a flat namespace, so a split enum forces the runner to guess
+     which enum a code lives in. the test data is the contract; match it.
+  D2 `ProtocolResult<T>` (Success/Failure), NOT exceptions. a malformed advertisement is the
+     ORDINARY case on a hostile air interface, not an exceptional one — and an exception crossing
+     Kotlin/Native is a CRASH, not a catchable throws. owed at iOS un-deferral: exports as
+     ProtocolResult<AnyObject>.
+  D3 `domain.radar.ProximityBand` is DELETED. `protocol.Band` is the single band type.
+     ProximityBand lacked UNKNOWN and OUT_OF_RANGE which the pipeline needs. two band enums in one
+     module is precisely the divergence ADR-007 exists to prevent — we do not get to reintroduce it
+     inside the shared module itself. android-kotlin executes the deletion.
 
 v0.1 ADDITION — GATED 2026-08-04. from SPEC.md §8.1, proposed by ble-protocol, APPROVED as-is:
   KeyRing · KeyRingEntry · AdvertiseRole · activeKid() · ephemeralId() · isOwnEphemeralId() · KeyError

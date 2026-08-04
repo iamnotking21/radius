@@ -25,6 +25,14 @@ toolchain: Temurin JDK21 · Gradle wrapper 8.13 (committed) · AGP 8.9 · Kotlin
 VERIFIED GREEN, by a compiler, not by assertion:
   :shared:compileDebugKotlinAndroid · :android:assembleDebug (APK 49.5MB) ·
   :shared:testDebugUnitTest 9/9 pass · :android:lintDebug 0 errors / 50 warnings
+UPDATED 2026-08-04 (android-kotlin, real radio + spike harness), all with --rerun-tasks:
+  :shared:testDebugUnitTest 53/53 pass (26 android-kotlin + 23 ble-protocol vectors + 4 other)
+  :android:assembleDebug 52.1MB · :android:assembleRelease 23.5MB (R8, lintVitalRelease green)
+  :android:lintDebug 0 errors / 50 warnings (all pre-existing: GradleDependency, UnusedResources)
+  SPIKE HARNESS PROVEN ABSENT FROM RELEASE: 69 Spike* classes in debug intermediates, 0 in
+  release; 0 occurrences of "spike" in the release merged manifest.
+  P1 PROVEN STRUCTURALLY: 0 uses-permission INTERNET in the MERGED manifest of BOTH variants.
+  The spike build cannot open a socket, so `adb pull` is the only egress that exists.
   KSP+Hilt+SQLCipher+Compose all wire up. SQLDelight with zero .sq files = NO-SOURCE, not an error.
   host guard works: iOS targets correctly SKIPPED with a loud warning on Windows.
 STILL UNVERIFIED, do not confuse with the above: everything iOS · every BLE behaviour ·
@@ -49,6 +57,16 @@ B7 iOS cannot emit service/mfr data in ANY state. resolved in spec via Carrier B
 - [x] mobile/shared + mobile/android scaffold (KMP, Compose, FGS, real BLE perms) — UNVERIFIED
 - [x] shared API v0 GATED into 40-contracts. rulings R-A..R-E. both client agents unblocked.
 - [x] BLE wire spec v0 + 65 conformance vectors (mobile/protocol/) — arithmetic only, no radio
+- [x] NEXT-6 item 4 — android-kotlin: REAL android.bluetooth.le radio (advertise Carrier A,
+      scan, duty per profile, epoch-boundary advertising restart, adapter-off/permission/
+      no-peripheral-role handling) + the Phase 0 SPIKE HARNESS. Compiles, tested, packaged.
+      NOT ON A RADIO. Every BLE claim is still owed.
+- [x] 40-contracts CONSISTENCY GAP 3 CLOSED. one-advertiser-per-account is now structural:
+      radio starts at AdvertiseRole.SCAN_ONLY on both platforms with no ctor/config/flag that
+      can start it otherwise; AdvertiseGuard is one shared pure function both actuals call, so
+      the rule is testable without a device and cannot drift per platform. The key-ring half is
+      closed by AdvertiseRequest carrying an AdvertisePayloadSource instead of a ByteArray —
+      the radio holds no payload, so it cannot cache one across a rotation seam.
 - [x] Figma file lvh2NvQKYn4byiBREyzaYL. 0:1 Foundations (14 frames) · 11:115 A·Onboarding
       (14 screens). 11:116-11:122 = 7 pages NOT enumerated.
 
@@ -140,3 +158,96 @@ DEFERRED, not cancelled: all iOS work · Mac procurement · Carrier B validation
   ≠ validated). §11 odds PRESERVED UNREVISED with a scoping note — a forecast quietly edited after
   a scope change is worthless. NOTHING HERE IS HARDWARE-VALIDATED. no JDK, no Mac, no device, no
   sniffer was used. still true, still says so on every page.
+2026-08-04 android-kotlin · REAL RADIO + SPIKE HARNESS. NEXT-6 item 4 done, item 5 unblocked.
+  radio: Carrier A service data, UUID-filtered scan, DutyProfile duty, 15-min UTC epoch restart
+  (KEY_SCHEDULE §4.2), adapter-off recovery that keeps user intent, scan-start throttle counted
+  on our side (Android's 5-per-30s punishes with SILENCE, not an error).
+  THREE CORRECTIONS to the scaffold, each a real bug: (a) FOREGROUND scan mode was
+  SCAN_MODE_LOW_LATENCY = 100% duty = four times the contracted 30% and no path to <4%/hr; now
+  BALANCED (25%). (b) advertising was gated on isMultipleAdvertisementSupported, which answers a
+  different question and would have refused perfectly capable hardware; now the advertiser
+  null-check. (c) scan filtered on service DATA, which OEMs are least likely to offload and which
+  silently hides Carrier B peers; now the service UUID.
+  CONTRACT AMENDMENTS NEEDING A GATE (ios-swift must be notified, iOS is DEFERRED so no code is
+  broken today): AdvertiseRequest.payload:ByteArray -> payloadSource:AdvertisePayloadSource ·
+  BleRadioPort.startAdvertising now takes resolved (frame, uuid, duty) not an AdvertiseRequest,
+  so Swift never sees an epoch or a payload source · BleRadio gains advertiseRole/advertiseState/
+  setAdvertiseRole · new BleOutcome reasons ROLE_SCAN_ONLY/NO_PAYLOAD_FOR_EPOCH/FRAME_LENGTH/
+  THROTTLED. ProximityBand deleted per ruling D3; RadarNode.band is protocol.Band and
+  displayedMetres is now nullable.
+  HARNESS (mobile/android/src/debug/, absent from release): advertises a controllable payload,
+  scans continuously, writes events.jsonl + sightings.csv + meta.json (with Build.FINGERPRINT,
+  the §4.3.3 row key) to app-external storage for adb pull. Live unique-advertiser-address count
+  and a LIVE §4.3.1 BIJECTION SCREEN. Counts its own dropped records and write failures, because
+  the B8 question is an assertion about ABSENCE and an uncounted drop voids the conclusion.
+  Separate FGS so screen-off and Doze conditions are capturable; deliberately NOT START_STICKY —
+  an OEM killing it IS the measurement.
+  STILL UNMEASURED AND UNMEASURABLE FROM A DESK: whether stop->start rotates the RPA on ANY
+  chipset (B8), real duty/battery, OEM survival, discovery latency, tx_power_cal per model,
+  ADAPTER_SETTLE_MS (1500ms is a guess). The on-device bijection screen finds failures cheaply;
+  it CANNOT declare a pass — a phone misses packets and Android never exposes the TxAdd bit, so
+  the catastrophic public-address case passes it. §5.3 still needs 3 sniffer dongles.
+  FLAGGED: androidx.work injects WAKE_LOCK + ACCESS_NETWORK_STATE + RECEIVE_BOOT_COMPLETED into
+  the merged manifest. Unused today. ACCESS_NETWORK_STATE on an app with no network permission
+  reads oddly in store review; documented in the manifest, not silently accepted.
+2026-08-04 android-kotlin · post-review fixes. all re-verified with --rerun-tasks:
+  :shared:testDebugUnitTest 54/54 · :android:assembleDebug 52.1MB · :android:assembleRelease
+  23.5MB · :android:lintDebug 0 errors / 50 warnings.
+  FIX B (decision 28) LANDED: RawSighting.toString no longer prints rssiDbm. The test that
+  asserted the OPPOSITE — "rssi is not sensitive and is useful in logs" — was INVERTED rather
+  than deleted, so the history stays visible in the diff; a test holding a leak in place is worse
+  than no test. Timestamp deliberately survives: with the payload redacted it degrades to "the
+  radio saw something at time T", carrying no distance, direction or pseudonym, and it is what
+  makes a log usable for the gap analysis these logs exist for. Verified by grep that no RSSI
+  reaches any string interpolation or any Log.* call anywhere in shared/ or android/.
+  WORKMANAGER REMOVED (not annotated). Declared, never called, and merging WAKE_LOCK +
+  ACCESS_NETWORK_STATE + RECEIVE_BOOT_COMPLETED into the manifest for nothing. All three are now
+  GONE from the merged manifest of BOTH variants, verified. Catalog pin kept with the reasoning
+  attached at the place someone would look when re-adding; re-adding must come with
+  tools:node="remove" for whatever we still do not want. Radar must never use WorkManager anyway
+  (15-min floor + Doze cannot hold a scan).
+  GENERAL LESSON, now written into the main manifest: A PERMISSION AUDIT MUST READ THE MERGED
+  MANIFEST, NOT THE SOURCE ONE. A source-only review would have called our permission set clean
+  while the shipped APK asked for a background-persistence signal and a network permission on an
+  app with no network permission. Any CI permission gate must target
+  build/intermediates/packaged_manifests/*/*/AndroidManifest.xml.
+  TIMING CONSTANTS: ADVERTISE_RESTART_GAP_MS (250), ADAPTER_SETTLE_MS (1500),
+  REGISTRATION_BACKOFF_MS (35000), CONSERVE_ON/OFF_MS are now under one banner block headed
+  "UNMEASURED GUESSES ... a number somebody made up at a desk", with the rule that a constant
+  LEAVES the block when it is measured — so the still-guessed set is visible at a glance and no
+  one can read a value as tuned. BOUNDARY_SETTLE_MS is called out as NOT a guess in the same
+  sense: fixed and identical on every device, so the population still rotates as one, and it is
+  numerically equal on both platforms on purpose.
+2026-08-04 android-kotlin · §8.5.2 KEY DESTRUCTION WIRED (ble-protocol handoff, security-privacy
+  HIGH). :shared:testDebugUnitTest 63/63 · assembleDebug 51.1MB · assembleRelease 23.3MB ·
+  lintDebug 0 errors. The library fix was inert without a caller; it now has one.
+  SCOPE CORRECTION I MADE AND WANT REVIEWED: the handoff said drive prune from the epoch-boundary
+  ADVERTISING restart. Tying it to advertising leaves the HIGH unfixed on most of the fleet —
+  under decision 35 exactly ONE device per account advertises and every other is SCAN_ONLY, yet a
+  scan-only device still holds a full ring (needs it for isOwnEphemeralId, and holds it against a
+  role transfer). frameForEpoch is only called while advertising, so pruning from there would
+  destroy nothing on the majority population. The epoch ticker is therefore DEVICE-scoped: it runs
+  whenever the radio is scanning OR advertising, and it keeps running across adapter-off, because
+  key destruction is not radio work and a phone with BT disabled has no business retaining keys.
+  SHAPE: new `EpochBoundaryListener` (commonMain, fun interface) + `setEpochBoundaryListener` on
+  BleRadio. The radio announces the boundary; whoever holds the ring acts. The radio still never
+  learns what a key is. Prune runs FIRST, UNCONDITIONALLY, and OUTSIDE the lock — the irreversible
+  security obligation must not sit behind an advertising restart that may be skipped (scan-only),
+  fail (adapter off) or return early; and calling out to foreign code under the radio monitor is
+  how a radio deadlocks. runCatching guards only against a listener violating MUST-NOT-THROW.
+  ALSO FIXED while in there: revoking to SCAN_ONLY now clears desiredAdvertise. Previously the
+  ticker would re-attempt an advertisement at every boundary and be refused by our own fail-closed
+  role gate — a retry loop against our own control, filling the log with ROLE_SCAN_ONLY rejections
+  that read as a bug.
+  SEAM CONSEQUENCE ACCEPTED AND PINNED (EpochBoundaryPruneTest, 7 tests): after a prune the device
+  can no longer recognise its own pre-seam eid for one epoch, so a reflected copy falls through to
+  ordinary resolution. NO error, NO anomaly log, NO retry, NO widened window — handled as an
+  ordinary non-resolving frame. Nothing depends on "a device does not carry its own account as a
+  candidate", which is the point of §9.6. Also pinned: active key never destroyed, advertising
+  still works after a prune, idempotent, clock-rewind and out-of-range no-op, single-entry ring
+  never pruned (the spike's case and every never-rotated device — destroying that key would make
+  them silently undiscoverable). selfEidDrops is now KNOWN-INCOMPLETE for one epoch per seam by
+  construction; noted in-source so a zero is never read as proof nothing was reflected.
+  OWED WHEN A LOGOUT/DELETE PATH EXISTS: KeyRing.destroyAllKeyMaterial() (decision 55, ADR-008
+  M5). No auth path exists to call it from. Recorded in the EpochBoundaryListener KDoc, next to
+  its twin, because that is where someone building that path will be looking.

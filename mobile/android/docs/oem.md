@@ -3,9 +3,21 @@
 Owner: android-kotlin. Living document. **Every row must be confirmed on a physical device
 before it is trusted.** Rows marked UNCONFIRMED are prior knowledge, not evidence.
 
-Status at time of writing: **NOTHING IN THIS FILE HAS BEEN VERIFIED ON HARDWARE.** No JDK on the
-dev machine (blocker B5), no build, no device run. This is the pre-flight checklist for the Phase 0
+Status: **NOTHING IN THIS FILE HAS BEEN VERIFIED ON HARDWARE.** B5 is closed and the code now
+builds and packages, but a build is not a radio. This is the pre-flight checklist for the Phase 0
 spike, not a report of results.
+
+**The instrument that fills this file in now exists**: `mobile/android/src/debug/kotlin/com/radius/android/spike/`,
+a debug-only harness reachable as a separate launcher icon ("Radius Spike") or by
+
+```
+adb shell am start -n com.radius.android.debug/com.radius.android.spike.SpikeActivity
+adb pull /sdcard/Android/data/com.radius.android.debug/files/spike/<run-id> .
+```
+
+It records every advertisement AND every radio lifecycle event to `events.jsonl` + `sightings.csv`,
+with a `meta.json` carrying `Build.FINGERPRINT` — which is the row key §4.3.3 wants, and what makes
+"same model, different firmware" distinguishable in the results.
 
 ---
 
@@ -72,8 +84,45 @@ These apply everywhere and are not worked around, only respected:
 4. **Legacy advertisement is 31 bytes.** flags (3) + 16-bit service UUID (4) + service data
    (4 + payload). With the 19-byte v0 payload that is 30 of 31 bytes used. The device name must
    never be included — it would overflow, and it is a stable identifier (safety invariant 4).
-5. **Peripheral role is not universal.** `isMultipleAdvertisementSupported == false` devices can
-   scan but never be seen. Radar is half-dead there and the UI must say so rather than pretend.
+5. **Peripheral role is not universal.** Some devices can scan and never be seen. Radar is
+   half-dead there and the UI must say so rather than pretend (`KEY_SCHEDULE.md` §4.3.6: "This
+   phone can see people nearby but cannot be seen by them" is a sentence a user is entitled to).
+
+   **CORRECTED 2026-08-04.** An earlier version of this file, and of `BleRadio.android.kt`, used
+   `isMultipleAdvertisementSupported == false` as the test for "cannot advertise". That is wrong:
+   that flag answers "can this controller run SEVERAL advertising sets at once", which is a
+   different question, and gating on it would have refused to advertise on hardware that is
+   perfectly capable of a single advertising set. The correct check is
+   `BluetoothAdapter.getBluetoothLeAdvertiser() != null`, exposed as `BleRadio.peripheralRoleSupported`.
+   `isMultipleAdvertisementSupported` is still RECORDED per device by the spike harness, because it
+   is useful OEM data — it is simply not a gate.
+
+6. **`ScanSettings` scan modes ARE the duty cycle**, and AOSP's numbers are the reason
+   `DutyProfile.FOREGROUND` maps to `SCAN_MODE_BALANCED` rather than `SCAN_MODE_LOW_LATENCY`:
+
+   ```
+   SCAN_MODE_LOW_POWER      512 ms / 5120 ms   =  10 %
+   SCAN_MODE_BALANCED      1024 ms / 4096 ms   =  25 %
+   SCAN_MODE_LOW_LATENCY   4096 ms / 4096 ms   = 100 %
+   ```
+
+   Root `CLAUDE.md` contracts a 30 % scan duty. BALANCED (25 %) is the nearest Android offers.
+   LOW_LATENCY is a continuous receiver at four times the contracted duty and there is no credible
+   path from it to <4 %/hr. **Several vendors ship their own window/interval values**, so the real
+   duty is a per-device measurement, not a number read off this table — which is itself a row the
+   spike should fill in.
+
+7. **Filter on the service UUID, not on service data.** Both match, but service-data filters are
+   the ones OEM controllers are least likely to offload, and a filter that falls back to software
+   filtering does not survive a screen-off scan — which is most of Radar's life. Bonus: a UUID
+   filter still delivers a Carrier B peer (our UUID, no service data), so the §5.0 matrix can tell
+   "an iOS-shaped peer was here" apart from "nothing was here".
+
+8. **`ACTION_STATE_CHANGED`/`STATE_ON` arrives before the adapter is usable.** On a large fraction
+   of handsets `getBluetoothLeScanner()` returns null, or `startScan` fails with `INTERNAL_ERROR`,
+   for roughly a second after the broadcast. Retrying immediately burns a scan-start from the
+   5-per-30s budget and fails anyway. `BleRadio.ADAPTER_SETTLE_MS` is currently 1500 ms and that
+   number is a GUESS — measuring the real per-OEM settle time is a spike row.
 
 ---
 
@@ -91,7 +140,42 @@ Minimum two OEMs, and one of them must be Samsung (per team rules). Pixel is the
 | RPA rotates in step with ephemeral_id | ☐ | ☐ | sniffer required |
 | battery <4%/hr scanning | ☐ | ☐ | Battery Historian trace attached to PR |
 | battery <1%/day idle | ☐ | ☐ | |
-| Android ↔ iOS discovery, both directions | ☐ | ☐ | see the iOS findings in `BleRadio.ios.kt` |
+| Android ↔ iOS discovery, both directions | ☐ | ☐ | DEFERRED with iOS (decision 33). Not a risk on the current plan; still owed. |
 
 Emulator results do not go in this table. A simulator BLE result is invalid and must never be
 reported as a pass.
+
+**Sample order is deliberately backwards from instinct.** `KEY_SCHEDULE.md` §4.3.3 puts MediaTek
+budget devices (Transsion/Infinix/Tecno, Realme, low-tier Xiaomi) in the FIRST batch, not the
+second: they have the least documented BT controllers and the largest share of the install base in
+the target markets. Flagships are the devices most likely to pass, so testing them first tells you
+least. Samsung must be tested in both its Exynos and Snapdragon variants — same marketing name,
+different controller.
+
+---
+
+## Running the spike harness
+
+1. Install the debug APK on two handsets with **different slots** (slot 1 and slot 2). Two handsets
+   on the same slot is the decision-35 twin case and the log will fill with `E_SELF_EID`.
+2. Grant Bluetooth permissions. On API 29-30 that includes `ACCESS_FINE_LOCATION` — without it a
+   scan returns **zero results silently**, which looks exactly like a hardware finding and is not.
+3. One handset: **Advertise ON**. The other: leave it off, or turn it on too for a symmetric run.
+4. For a **co-rotation / latency capture**: turn **Max capture ON**. Yield matters, battery does
+   not, and the run header records that any battery figure from it is invalid.
+5. For a **battery capture**: Max capture **OFF**, duty = the profile being measured, and attach a
+   Battery Historian trace to the PR.
+6. Leave it ≥90 minutes, spanning ≥6 UTC 15-minute boundaries (`KEY_SCHEDULE.md` §5.2). **Do not
+   use a compressed test epoch** — the question includes the interaction between our boundary and
+   the controller's own ~900 s RPA timer, and shortening our period changes the thing being
+   measured.
+7. Pull the directory and check `meta.json` first: `diagnostics_dropped` and `write_failures` must
+   be 0, or the capture's absence claims are void.
+
+**What the on-screen bijection counters are and are not.** The harness shows, live, "addresses seen
+with >1 eid" and "eids seen with >1 address" — the §4.3.1 bijection, computed from what this phone's
+own receiver saw. A **non-zero** value is real evidence that invariant 5 fails on that hardware. A
+**zero** value is NOT evidence that it holds: a phone's scanner hops channels and misses packets, and
+Android never exposes the TxAdd bit, so the catastrophic public-address case can pass the on-device
+screen. §5.1 buys three nRF52840 dongles for exactly this reason and the asymmetry is the whole
+point of §5.3. Use the harness to find failures early and cheaply; use the sniffer to declare a pass.

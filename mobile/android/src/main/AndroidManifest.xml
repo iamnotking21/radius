@@ -89,6 +89,26 @@
         ACCESS_BACKGROUND_LOCATION · ACCESS_COARSE_LOCATION · READ_CONTACTS · READ_PHONE_STATE ·
         READ_PHONE_NUMBERS (calling invariant C1: phone numbers are never exchanged) ·
         RECORD_AUDIO for anything other than an active WebRTC call (invariant C2: never recorded)
+
+      ALSO ABSENT, AND LOAD-BEARING: the network permission. Nothing in this app, in either build
+      variant, may open a socket. That is the enforcement of 40-contracts P1 — an observed
+      ephemeral_id must never reach a server on any endpoint, including diagnostics — and it is
+      what makes the Phase 0 spike harness's `adb pull` the only egress that exists. It will have
+      to be granted eventually for the API client; when it is, P1 becomes a code-review rule
+      instead of a structural impossibility, and that transition deserves its own conversation.
+
+      ALSO ABSENT AS OF 2026-08-04, and this one had to be removed rather than merely not added:
+      WAKE_LOCK, ACCESS_NETWORK_STATE and RECEIVE_BOOT_COMPLETED. Nobody typed them — androidx.work
+      merged them in, for a WorkManager dependency that was declared and never called. The
+      dependency is now gone (see the block in mobile/android/build.gradle.kts) and all three
+      permissions are gone with it, verified against build/intermediates/packaged_manifests/ for
+      BOTH variants before and after.
+
+      The general lesson, worth more than the specific fix: A PERMISSION AUDIT MUST READ THE MERGED
+      MANIFEST, NOT THIS FILE. A source-only review of this file would have declared the permission
+      set clean while the shipped APK asked for a background-persistence signal and a network
+      permission. Whatever CI check gets written for this must run against
+      build/intermediates/packaged_manifests/*/*/AndroidManifest.xml.
     -->
 
     <application

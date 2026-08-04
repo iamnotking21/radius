@@ -1,24 +1,42 @@
 package com.radius.shared.domain.radar
 
+import com.radius.shared.protocol.Band
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 /**
  * Guards the shape of the Radar domain, which is a safety surface.
- *
- * !! UNVERIFIED !! Never executed — no JDK on the authoring machine (blocker B5).
  */
 class RadarModelsTest {
 
     @Test
-    fun there_are_exactly_four_bands_in_near_to_far_order() {
-        // Safety invariant 2. A fifth band, or a reorder, changes what the user is told about how
-        // close a stranger is. That is a safety change, not a UI change, and it fails here first.
+    fun there_are_exactly_four_displayable_bands_in_near_to_far_order() {
+        // Safety invariant 2. A fifth DISPLAYABLE band, or a reorder, changes what the user is
+        // told about how close a stranger is. That is a safety change, not a UI change, and it
+        // fails here first.
+        //
+        // Rewritten for ruling D3: the type is now `protocol.Band`, which also carries two
+        // NON-DISPLAYABLE states the old `ProximityBand` could not express — UNKNOWN (below
+        // WARMUP_SAMPLES) and OUT_OF_RANGE (adjusted < -95 dBm). The four-band promise is about
+        // what a user is SHOWN, so the assertion is about the displayable subset and the other two
+        // are asserted separately as non-displayable. Folding them into EDGE to keep this test
+        // looking the same would have been invariant 2 failing quietly.
         assertEquals(
             listOf("HERE", "CLOSE", "AROUND", "EDGE"),
-            ProximityBand.entries.map { it.name },
+            Band.entries.filter { it != Band.UNKNOWN && it != Band.OUT_OF_RANGE }.map { it.name },
         )
+    }
+
+    @Test
+    fun the_two_non_displayable_bands_exist_and_are_distinct_from_edge() {
+        // The consumer obligation from D3, pinned. If someone later "simplifies" Band by deleting
+        // UNKNOWN, every not-yet-warmed-up peer silently becomes a displayed distance.
+        assertTrue(Band.UNKNOWN in Band.entries)
+        assertTrue(Band.OUT_OF_RANGE in Band.entries)
+        assertEquals(-1, Band.UNKNOWN.ordinal4, "UNKNOWN must sort outside the band ladder")
+        assertEquals(4, Band.OUT_OF_RANGE.ordinal4, "OUT_OF_RANGE is beyond EDGE, not equal to it")
+        assertEquals(3, Band.EDGE.ordinal4)
     }
 
     @Test
@@ -32,7 +50,7 @@ class RadarModelsTest {
         // by the caller (shared core seeds it randomly per session), not derived from a sighting.
         val node = RadarNode(
             nodeId = "session-node-1",
-            band = ProximityBand.CLOSE,
+            band = Band.CLOSE,
             displayAngleTurns = 0.37f,
             displayedMetres = 24,
             lastSeenEpochMs = 1_754_000_000_000L,

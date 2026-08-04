@@ -1,8 +1,12 @@
 # Radius mobile — version catalog
 #
-# !! UNVERIFIED !!  No JDK on the authoring machine (blocker B5), so no version in this file
-# has been resolved by Gradle. Treat every pin as a proposal until `./gradlew build` runs green
-# on a machine with JDK 17+. Do not cite a green build that has not happened.
+# RESOLVED AND VERIFIED 2026-08-04. Every pin below has been resolved by Gradle on Temurin JDK 21
+# with wrapper 8.13: :shared and :android compile, debug + release APKs assemble under R8, unit
+# tests and lint run green. B5 is closed.
+#
+# STILL UNRESOLVED, and do not read the line above as covering them: every iOS-only artifact.
+# Kotlin/Native targets do not configure on Windows (B4), so ktor-client-darwin and
+# sqldelight-driver-native have NEVER been fetched or linked. Those two pins remain proposals.
 
 [versions]
 # --- core ---
@@ -81,6 +85,11 @@ androidx-activity-compose     = { module = "androidx.activity:activity-compose",
 androidx-core-ktx             = { module = "androidx.core:core-ktx",                               version.ref = "coreKtx" }
 androidx-lifecycle-runtime    = { module = "androidx.lifecycle:lifecycle-runtime-ktx",             version.ref = "lifecycle" }
 androidx-lifecycle-service    = { module = "androidx.lifecycle:lifecycle-service",                 version.ref = "lifecycle" }
+# NOT DEPENDED ON as of 2026-08-04. Pinned but unused, deliberately — full reasoning in the block
+# in mobile/android/build.gradle.kts. Short version: androidx.work merges WAKE_LOCK,
+# ACCESS_NETWORK_STATE and RECEIVE_BOOT_COMPLETED into the merged manifest without anyone typing
+# them, and we were paying that store-review cost for a dependency nothing called. Re-adding it is
+# a deliberate act with a manifest change attached, not an uncommented one-liner.
 androidx-work-runtime         = { module = "androidx.work:work-runtime-ktx",                       version.ref = "workManager" }
 hilt-android                  = { module = "com.google.dagger:hilt-android",                       version.ref = "hilt" }
 hilt-compiler                 = { module = "com.google.dagger:hilt-android-compiler",              version.ref = "hilt" }
