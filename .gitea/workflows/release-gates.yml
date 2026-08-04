@@ -75,7 +75,7 @@ jobs:
       - if: ${{ !cancelled() }}
         run: bash devops/ci/runner/run-stage.sh build-assemble-debug
       - if: ${{ !cancelled() }}
-        run: bash devops/ci/runner/run-stage.sh gate-conformance # [HANDOFF-1] see .gitea/workflows/ci.yml
+        run: bash devops/ci/runner/run-stage.sh gate-conformance
 
   release-gate:
     name: RELEASE GATE

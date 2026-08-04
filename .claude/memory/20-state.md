@@ -305,3 +305,36 @@ DEFERRED, not cancelled: all iOS work · Mac procurement · Carrier B validation
   workflow file is how someone edits the wrong thing later. History preserved in git, not deleted.
   HANDOFF TO devops-tencent: flip `runs-on: windows-latest` -> `ubuntu-latest` for the `android` job
   in .github/workflows/ci.yml — the qa-test half of B12 is done, this is the other half.
+2026-08-04 devops-tencent · B12 FULLY CLOSED. Flipped every GitHub job to ubuntu-latest (ci.yml
+  android; release-gates.yml release-uuid-gate + android). 1x billed minutes instead of 2x, before
+  a single minute was ever spent, and .gitea/'s conformance stage is no longer knowingly broken.
+  JUDGEMENT CALL, since the cautious-looking move was to stay on Windows until a run was observed:
+  THAT FRAMING IS BACKWARDS. "Everything green was verified on Windows" is true of ONE DEV BOX with
+  a local SDK, a local.properties and warm Gradle caches. GitHub's windows-latest is not that box —
+  it has no local.properties either, and it is a far less-trodden path for Android CI than
+  ubuntu-latest. The real choice was between TWO unproven hosted images, and ubuntu is the
+  better-trodden one, at half the cost, on the same OS family as the Gitea runner everything
+  migrates to. Staying on Windows buys a feeling of control, not control, and needs a second
+  unobserved experiment later anyway. So: flipped, and NOT declared working.
+  RESIDUAL RISK NAMED RATHER THAN HEDGED: no Android build has ever executed on Linux, by anyone,
+  on any machine. First ubuntu run is a genuine experiment whose specific failure mode is a
+  RUNNER-IMAGE problem getting written down as a CODE REGRESSION — after which the next person
+  spends a day in Kotlin instead of 30s in runner config. Mitigations: run-stage.sh's preflight
+  already fails in ~1s with an unmistakably runner-shaped message; NEW §5b "FIRST UBUNTU RUN —
+  ATTRIBUTION" in devops/ci/runner/README.md maps every likely failure signature to runner-vs-code
+  (SDK env, licence/platform-35 download, mode-bit, CRLF shebang, vs compile/lint/test/vector
+  divergence which are OS-independent); and a genuine one-line bisect back to windows-latest —
+  `shell: bash` was KEPT on every ubuntu step for exactly that reason, so the bisect stays one line.
+  Deliberately did NOT pre-add an sdkmanager step: an untested provisioning step on an image that
+  probably already has platform 35 just adds a new way for the first run to fail. The remedy is
+  pre-written in the triage table instead of pre-applied.
+  Tripwire in run-stage.sh's gate-conformance case SELF-RETIRED exactly as designed — it greps
+  conformance_gate.sh for the literal, which is now gone. KEPT dormant so a reintroduction re-arms
+  it, and deliberately NOT widened to lib/common.sh where the literal lives legitimately inside
+  qa_gradle_wrapper(); widening it would make it fire forever on the correct implementation.
+  RE-VERIFIED after the flip, all 12 stages on Windows: 4 fast gates + conformance (116 vectors) +
+  unit-test/lint/assembleDebug exit 0 · known-red exit 0 on push, exit 1 under RADIUS_CI_STRICT=1 ·
+  4 YAML files parse · gate self-tests now 45/45. HANDOFF-2 closed by qa-test (android.yml is a
+  pointer). ADR-009 Accepted. STILL OPEN: HANDOFF-3 — root CLAUDE.md REPO MAP has no owner line for
+  .github/ or .gitea/ (orchestrator). NOTHING HAS EVER RUN IN CI. Not once. "Done" for this item
+  means one observed green run, and that has not happened.

@@ -61,14 +61,11 @@ The line that must not be crossed: **the day CI needs a signing key, a registry 
 production access, it moves to Gitea first.** At that point the third-party objection becomes real,
 because that is when a CI provider starts holding something that matters.
 
-> **ADR PROPOSAL — for orchestrator.** `docs/adr/` is orchestrator-only and this is a decision with
-> a stack-document contradiction in it, so it is proposed here rather than written there:
-> *"ADR-00X — Interim GitHub Actions for CI while B3 is open."* Context: gates exist, nothing runs
-> them, no Gitea instance exists. Decision: dual-target CI, all logic in-repo, GitHub interim and
-> secret-free, Gitea the destination, migrate when B3 closes or the moment CI needs a secret —
-> whichever is first. Consequence: root `CLAUDE.md`'s "CI: Gitea Actions self-host" needs a
-> parenthetical, and the REPO MAP needs a line assigning `.github/` and `.gitea/` to devops-tencent
-> (workflow discovery is inherently the runner's job, but it is currently unowned).
+> **This is now settled in writing: `docs/adr/ADR-009-interim-github-actions-ci.md`, Accepted.**
+> Dual-target CI, all logic in-repo, GitHub interim and secret-free, Gitea the destination, migrate
+> when B3 closes or the moment CI needs a secret — whichever comes first. The paragraphs above are
+> the operational summary; ADR-009 is the authority. Still outstanding from it: the REPO MAP line
+> assigning `.github/` and `.gitea/` to devops-tencent (HANDOFF-3).
 
 ---
 
@@ -148,31 +145,56 @@ export PATH="$JAVA_HOME/bin:$PATH"
 
 ## 5. OPEN HANDOFFS
 
-**HANDOFF-1 → qa-test (blocks the Linux/Gitea conformance stage).**
-`devops/ci/gates/conformance_gate.sh` phase 2 invokes `./gradlew.bat`, a Windows-only entrypoint, on
-a script whose own workflow header specifies a Linux runner. It cannot execute on the self-hosted
-Linux runner. That file is in the qa-test carve-out and is not ours to edit.
+**HANDOFF-1 / B12 — CLOSED.** `conformance_gate.sh` phase 2 used to hardcode `./gradlew.bat`, a
+Windows-only entrypoint, which forced the GitHub `android` job onto `windows-latest` at 2x billed
+minutes and made the Gitea conformance stage unrunnable. qa-test replaced it with
+`qa_gradle_wrapper()` in `devops/ci/gates/lib/common.sh` — same `uname -s` rule as
+`run-stage.sh`'s `gradle_wrapper()`, reused rather than reinvented, with `test_gradle_wrapper.sh`
+covering every branch (self-test suite 39 → 45 assertions). Both GitHub jobs are now
+`ubuntu-latest`. The tripwire in `run-stage.sh`'s `gate-conformance` case retired itself the moment
+the literal left that file, and is kept, dormant, so a reintroduction re-arms it automatically.
 
-Consequences and the fix:
-
-* Interim: the GitHub `android` job runs on `windows-latest`. That is also the exact toolchain the
-  whole Android path was verified green on, so it is not a bad interim — but it is a *forced* choice
-  and it costs 2x billed minutes on a private repo.
-* Fix: make the wrapper call OS-aware (`run-stage.sh`'s `gradle_wrapper()` is a three-line
-  reference implementation). Then flip `runs-on: windows-latest` → `ubuntu-latest` in
-  `.github/workflows/ci.yml` — one line — and `.gitea/workflows/ci.yml` starts working at the
-  same time.
-* `run-stage.sh` detects this exact condition and prints the reason rather than a bare "no such
-  file". The detection stops matching by itself once the gate is fixed; nothing to clean up.
-
-**HANDOFF-2 → orchestrator.** `devops/ci/workflows/android.yml` is now superseded. It is qa-test's
-file, so it has not been touched. Its job definitions were the input to `run-stage.sh`'s stage table
-and its per-job comments carry real history worth keeping — but two workflow definitions for the
-same gates is the drift risk this whole layering exists to eliminate. It should be reduced to a
-pointer, by its owner.
+**HANDOFF-2 — CLOSED** by its owner. `devops/ci/workflows/android.yml` is a pointer now, not a
+workflow. Emptied rather than deleted, which is the better call than the one this file originally
+asked for: it preserves the location someone would look in while removing the second,
+authoritative-looking copy of the job list.
 
 **HANDOFF-3 → orchestrator.** REPO MAP has no owner for `.github/` or `.gitea/`. Claimed here as
-runner territory; needs a line in root `CLAUDE.md` to be real.
+runner territory; needs a line in root `CLAUDE.md` to be real. (ADR-009 covers the interim-CI
+decision itself.)
+
+---
+
+## 5b. FIRST UBUNTU RUN — ATTRIBUTION
+
+**No Android build in this project has ever executed on Linux.** Not once, by anyone — nobody on the
+team owns a Linux machine. Every green result on record comes from one Windows dev box with a local
+SDK and warm Gradle caches.
+
+So the first `ubuntu-latest` run is a genuine experiment, and it has a specific failure mode worth
+naming in advance: **a runner-image problem that gets written down as a code regression.** Once
+"the Android build broke" is in a commit message or an issue title, the next person spends a day in
+Kotlin instead of thirty seconds in the runner config. Triage before you file:
+
+| what you see | it is | what to do |
+|---|---|---|
+| `[runner][FAIL] neither ANDROID_HOME nor ANDROID_SDK_ROOT is set` (fails in ~1s) | **runner** | image lacks the SDK env. Add an SDK step. Not a code change. |
+| AGP: `Failed to install the following SDK components` / licence not accepted | **runner** | add `sdkmanager "platforms;android-35" "build-tools;35.0.0"` before the Gradle steps. Deliberately *not* pre-added — an untested provisioning step on an image that probably already has it just adds a new thing that can break the first run. |
+| `Permission denied: ./gradlew` | **runner/checkout** | file mode lost in transit. Blob is committed 100755, LF-only, `#!/bin/sh` — verified against `git show HEAD:mobile/gradlew`, not the working tree, so `core.autocrlf` is not masking a CR. |
+| `bad interpreter: /bin/sh^M` | **runner/checkout** | CRLF injected by checkout config. Not the committed blob. |
+| Kotlin compile error, lint error, failing unit test, conformance vector divergence | **code** | file it against the owning agent. These are OS-independent and would fail on Windows too. |
+
+**One-line bisect.** If a failure is ambiguous, flip `runs-on: ubuntu-latest` → `windows-latest` on
+the `android` job in `.github/workflows/ci.yml` and re-run. Windows passes ⇒ runner. Windows also
+fails ⇒ code. `workflow_dispatch` is enabled on both workflows, so the re-run is a click.
+
+**Why we flipped anyway,** since the safe-looking option was to stay on Windows until a run was
+observed: staying would not have preserved a proven toolchain, because the proven toolchain is a
+*local dev machine*, not GitHub's `windows-latest` — which has no `local.properties` either and is a
+far less-trodden path for Android CI than `ubuntu-latest`. The real choice was between two unproven
+hosted images, and Ubuntu is the better-trodden one, at half the billed minutes, on the same OS
+family as the Gitea runner everything migrates to. Staying on Windows would have bought a feeling of
+control rather than control, and would have required a second unobserved experiment later anyway.
 
 ---
 
@@ -197,8 +219,8 @@ runner territory; needs a line in root `CLAUDE.md` to be real.
 
 **$0/mo today.** No infrastructure is provisioned (B3). GitHub-hosted runners are free on public
 repos; on a **private** repo Linux bills 1x and **Windows 2x**, against the plan's free monthly
-minutes. The `android` job is the only expensive one, and it is on Windows solely because of
-HANDOFF-1 — closing that handoff halves this line item.
+minutes. **Every job is now `ubuntu-latest` (1x)** — the `android` job was on Windows only while
+B12 was open, and closing it halved this line item before a single minute was ever billed.
 
 Mitigations already in place: `concurrency` cancels superseded runs; path filters keep doc-only
 pushes from triggering a build; `cache: gradle` avoids cold dependency downloads.

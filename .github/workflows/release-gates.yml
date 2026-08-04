@@ -79,7 +79,7 @@ jobs:
   # defence-in-depth against string-literal leaks, which is the class it genuinely does catch.
   release-uuid-gate:
     name: "0xFDA9 release gate (STRICT — expected RED, B9/B11)"
-    runs-on: windows-latest # see ci.yml `android` job: HANDOFF-1, gradlew.bat
+    runs-on: ubuntu-latest # was windows-latest until B12 closed — see ci.yml `android` job
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v4
@@ -101,7 +101,7 @@ jobs:
 
   android:
     name: android build + conformance (strict)
-    runs-on: windows-latest
+    runs-on: ubuntu-latest # was windows-latest until B12 closed — see ci.yml `android` job
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v4

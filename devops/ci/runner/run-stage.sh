@@ -183,17 +183,22 @@ run_stage() {
     gate-conformance)
       require_android_toolchain
       command -v node >/dev/null 2>&1 || { err "node is required by conformance_gate.sh phase 1"; exit 1; }
-      # DIAGNOSTIC, not a workaround. conformance_gate.sh invokes `./gradlew.bat` directly, which
-      # only exists as an executable on Windows. That script is qa-test's (devops/ci/gates/ carve-out)
-      # and is not ours to edit, so on a POSIX runner this stage fails — with a useless "no such
-      # file" unless we say the real reason first. HANDOFF-1 in devops/ci/runner/README.md.
-      # The condition below stops matching by itself the moment qa-test makes the call portable.
+      # SELF-RETIRED TRIPWIRE, currently dormant. B12/HANDOFF-1: conformance_gate.sh used to invoke
+      # `./gradlew.bat` directly, a Windows-only entrypoint, which made this stage unrunnable on a
+      # POSIX runner — and would have failed with a useless "no such file" rather than the reason.
+      # qa-test fixed it (qa_gradle_wrapper() in devops/ci/gates/lib/common.sh), the literal is gone
+      # from that file, and this condition therefore stopped matching BY ITSELF. Nothing was cleaned
+      # up; nothing needed to be.
+      #
+      # KEPT, not deleted: it re-arms automatically if a hardcoded .bat is ever reintroduced there.
+      # Cost is one grep. DELIBERATELY SCOPED TO conformance_gate.sh ONLY — `lib/common.sh` contains
+      # the literal legitimately, inside the OS-aware helper, and widening this grep to the whole
+      # gates/ tree would make it fire forever on the correct implementation.
       if [[ "$(uname -s)" != MINGW* && "$(uname -s)" != MSYS* && "$(uname -s)" != CYGWIN* ]] \
          && grep -q 'gradlew\.bat' devops/ci/gates/conformance_gate.sh; then
-        err "HANDOFF-1: conformance_gate.sh phase 2 hardcodes ./gradlew.bat and this runner is $(uname -s)."
-        err "The gate cannot execute a Windows batch file here. Two ways forward, both one line:"
-        err "  (a) qa-test makes the wrapper call OS-aware in devops/ci/gates/conformance_gate.sh, or"
-        err "  (b) this stage runs on a Windows runner (what .github/workflows/ci.yml does today)."
+        err "REGRESSION: conformance_gate.sh hardcodes ./gradlew.bat again and this runner is $(uname -s)."
+        err "The gate cannot execute a Windows batch file here. This was B12; it was fixed by using"
+        err "qa_gradle_wrapper() from devops/ci/gates/lib/common.sh. Use it again."
         err "Not silently skipping: an unrun conformance gate and a passing one must never look alike."
         exit 1
       fi

@@ -109,13 +109,24 @@ jobs:
   # ================================================================================================
   # ANDROID BUILD + CONFORMANCE — the expensive job. ALL BLOCKING.
   #
-  # WINDOWS, DELIBERATELY, AND TEMPORARILY. devops/ci/gates/conformance_gate.sh phase 2 (the
-  # authoritative one — it actually executes the BLE codec against the conformance vectors) invokes
-  # `./gradlew.bat`. That is a Windows-only entrypoint, the script belongs to qa-test, and it is not
-  # ours to edit. Windows is also the exact toolchain the whole Android path was verified green on.
-  # HANDOFF-1 (devops/ci/runner/README.md): when qa-test makes that call OS-aware, change one line —
-  # `runs-on: windows-latest` -> `ubuntu-latest` — and the self-hosted Linux Gitea runner starts
-  # working at the same time. run-stage.sh's own Gradle calls are already OS-portable.
+  # UBUNTU since B12 closed (qa-test made conformance_gate.sh's Gradle wrapper call OS-aware via
+  # qa_gradle_wrapper() in devops/ci/gates/lib/common.sh; 45/45 gate self-tests, 6 of them covering
+  # every uname branch). This job ran on windows-latest only because that gate hardcoded
+  # `./gradlew.bat`.
+  #
+  # WHY UBUNTU IS THE LOWER-RISK CHOICE, not the riskier one — worth stating because the intuition
+  # runs the other way. "Everything was verified green on Windows" is true of a specific dev
+  # machine: local Android SDK at a known path, a local.properties, warm Gradle caches. GitHub's
+  # windows-latest is none of those things. So this is not proven-Windows vs unproven-Ubuntu; it is
+  # two unproven hosted images, and ubuntu-latest is by a wide margin the better-trodden one for
+  # Android CI, at 1x billed minutes instead of 2x, on the same OS family as the self-hosted Gitea
+  # runner this all migrates to. Staying on Windows would have bought a false sense of control on
+  # the less standard image.
+  #
+  # IF THE FIRST UBUNTU RUN FAILS: read devops/ci/runner/README.md "FIRST UBUNTU RUN — ATTRIBUTION"
+  # BEFORE filing anything. A runner-image problem must not be recorded as a code regression. The
+  # preflight in run-stage.sh already fails in ~1s with an unmistakably runner-shaped message when
+  # the SDK is the problem, and the one-line bisect (flip this back to windows-latest) is documented.
   #
   # NO macOS JOB. iOS is DEFERRED (blocker B4, no Mac). Kotlin/Native iOS targets are host-guarded
   # and skip with a warning; there is nothing here for a Mac to do, and adding a job that pretends
@@ -123,7 +134,7 @@ jobs:
   # ================================================================================================
   android:
     name: android build + conformance (blocking)
-    runs-on: windows-latest
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
@@ -135,6 +146,11 @@ jobs:
 
       # Every step below runs even if an earlier one failed. One red step should tell you everything
       # that is broken, not the first thing that is broken.
+      #
+      # `shell: bash` is redundant on ubuntu (it is already the default) and kept on purpose: it is
+      # what makes the documented bisect in devops/ci/runner/README.md §5b genuinely ONE line —
+      # flip runs-on to windows-latest and these steps still run, because Git Bash is selected
+      # explicitly rather than inherited from the OS.
       - name: ":shared:testDebugUnitTest + :android:testDebugUnitTest"
         shell: bash
         run: bash devops/ci/runner/run-stage.sh build-unit-test

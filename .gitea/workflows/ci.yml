@@ -87,15 +87,18 @@ jobs:
   # ================================================================================================
   # ANDROID BUILD + CONFORMANCE. ALL BLOCKING.
   #
-  # HANDOFF-1, OPEN: the conformance step WILL FAIL on this Linux runner until qa-test makes
-  # devops/ci/gates/conformance_gate.sh invoke the Gradle wrapper OS-aware — it hardcodes
-  # `./gradlew.bat`, which does not execute on Linux. devops/ci/runner/run-stage.sh detects exactly
-  # that condition and prints the reason instead of a bare "no such file", and the detection stops
-  # matching by itself the moment the gate is fixed.
-  # It is left BLOCKING and not skipped on purpose: an unrun conformance gate and a passing one must
-  # never look the same in a CI log. This is the one stage that guards the moat.
-  # Until then the authoritative conformance run happens on the interim GitHub Windows runner
-  # (.github/workflows/ci.yml). No Mac is involved on either path — iOS is DEFERRED (B4).
+  # HANDOFF-1 / B12 CLOSED. The conformance stage is now viable on a Linux runner: qa-test replaced
+  # conformance_gate.sh's hardcoded `./gradlew.bat` with qa_gradle_wrapper() in
+  # devops/ci/gates/lib/common.sh — the same uname rule as run-stage.sh's gradle_wrapper(), reused
+  # rather than duplicated, with 6 self-test assertions covering every branch. This was the last
+  # thing standing between this file and being runnable; what remains is B3 (no Gitea instance).
+  #
+  # STILL UNPROVEN ANYWHERE: an actual Linux execution of the Android build. Nobody on this project
+  # owns a Linux machine, so the first real Linux run will be either GitHub's ubuntu-latest
+  # (.github/workflows/ci.yml, interim) or this runner. If it fails, read
+  # devops/ci/runner/README.md "FIRST UBUNTU RUN — ATTRIBUTION" before blaming the code.
+  #
+  # No Mac on any path — iOS is DEFERRED (B4).
   # ================================================================================================
   android:
     name: android build + conformance (blocking)
@@ -110,6 +113,6 @@ jobs:
       - name: ":android:assembleDebug"
         if: ${{ !cancelled() }}
         run: bash devops/ci/runner/run-stage.sh build-assemble-debug
-      - name: "conformance vectors (BLE codec — authoritative) [HANDOFF-1]"
+      - name: "conformance vectors (BLE codec — authoritative)"
         if: ${{ !cancelled() }}
         run: bash devops/ci/runner/run-stage.sh gate-conformance
