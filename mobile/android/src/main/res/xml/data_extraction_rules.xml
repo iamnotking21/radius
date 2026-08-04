@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Nothing leaves this device by backup. Ever.
+
+  The local database holds encounters, message plaintext after local decryption, and the material
+  that ephemeral ids are derived from. E2EE keys never leave the device and never sync to a server
+  (root CLAUDE.md, mobile/CLAUDE.md) — that promise is worthless if Android quietly ships the same
+  data to Google Drive backup or to a new handset via device-to-device transfer.
+
+  android:allowBackup is also false in the manifest. This file is the belt to that braces.
+-->
+<data-extraction-rules>
+    <cloud-backup>
+        <exclude domain="root" />
+        <exclude domain="database" />
+        <exclude domain="sharedpref" />
+        <exclude domain="external" />
+        <exclude domain="file" />
+    </cloud-backup>
+    <device-transfer>
+        <exclude domain="root" />
+        <exclude domain="database" />
+        <exclude domain="sharedpref" />
+        <exclude domain="external" />
+        <exclude domain="file" />
+    </device-transfer>
+</data-extraction-rules>

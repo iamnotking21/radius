@@ -1,0 +1,55 @@
+# --- gradle / kotlin ---
+.gradle/
+build/
+**/build/
+local.properties
+.kotlin/
+kotlin-js-store/
+
+# --- android ---
+*.apk
+*.aab
+*.keystore
+*.jks
+captures/
+.cxx/
+
+# --- xcode / ios ---
+xcuserdata/
+*.xcworkspace/xcuserdata/
+DerivedData/
+*.xcuserstate
+Pods/
+*.xcframework/
+Derived/
+*.xcodeproj/
+*.xcworkspace/
+
+# --- go ---
+bin/
+vendor/
+
+# --- node / web ---
+node_modules/
+.next/
+dist/
+.turbo/
+
+# --- ide ---
+.idea/
+*.iml
+.vscode/
+.fleet/
+
+# --- os ---
+.DS_Store
+Thumbs.db
+
+# --- secrets: SOPS only. plaintext secrets NEVER committed. ---
+*.env
+.env.*
+!.env.example
+*-unencrypted.yaml
+*.dec.yaml
+age.key
+*.agekey

@@ -1,0 +1,7 @@
+# Build output. The RadiusShared XCFramework is produced by Gradle from mobile/shared/
+# on every build (Scripts/build-shared-framework.sh) and is NEVER committed.
+#
+# Committing a binary shared core would defeat the whole point of the pre-build phase:
+# the repo would carry a snapshot that can silently disagree with mobile/shared/ sources.
+*
+!.gitignore

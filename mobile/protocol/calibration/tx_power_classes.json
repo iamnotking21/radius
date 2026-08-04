@@ -1,0 +1,47 @@
+{
+  "schema": "radius.ble.calibration/v0",
+  "spec": "mobile/protocol/SPEC.md v0 §3.2",
+  "status": "PLACEHOLDER — UNCALIBRATED — NO MEASURED DATA IN THIS FILE",
+  "warning": "Every value below is the default, not a measurement. Nothing here has been observed on hardware. Do not cite this file as calibration data and do not let a green CI run imply it is populated. It is populated by the Phase 0 hardware rig, one row per device model, or it is not populated.",
+  "description": "Maps a device model to its tx_power_cal class: the RSSI a reference receiver measures at 1 metre from that transmitter, quantised to the seven legal values.",
+  "legal_values_dbm": [-75, -70, -65, -60, -55, -50, -45],
+  "default_dbm": -60,
+  "default_rationale": "Equals TX_REF_DBM in BANDING.md §1, so an uncalibrated device normalises to a zero offset. It is a neutral guess, not a correct one.",
+  "quantisation_rule": "Clamp the measured 1 m RSSI to the nearest legal value before encoding. Never transmit an unquantised value — fine-grained calibration is a device-model fingerprint that survives every ephemeral ID rotation (SPEC.md §3.2).",
+  "measurement_procedure": {
+    "note": "Must be identical for every model or the table is worthless.",
+    "steps": [
+      "Reference receiver at exactly 1.00 m, line of sight, both devices at 1.0 m height.",
+      "Free space: no bodies, walls, or metal within 2 m of the path.",
+      "Device under test advertising at its normal Radius foreground settings.",
+      "Collect at least 100 RSSI samples over at least 60 s.",
+      "Take the median, not the mean — RSSI distributions are skewed by multipath.",
+      "Repeat with the device rotated 90, 180 and 270 degrees; take the median of medians. Antenna orientation matters more than most people expect.",
+      "Quantise to the nearest legal value and record the raw median alongside it."
+    ],
+    "hardware_required": true,
+    "simulator_valid": false,
+    "simulator_note": "A simulator has no radio and no antenna. There is no meaningful sense in which it can produce a calibration value."
+  },
+  "models": [
+    {
+      "match": { "platform": "ios", "model_identifier": "*" },
+      "tx_power_cal_dbm": -60,
+      "source": "DEFAULT — UNMEASURED",
+      "raw_median_dbm": null
+    },
+    {
+      "match": { "platform": "android", "manufacturer": "*", "model": "*" },
+      "tx_power_cal_dbm": -60,
+      "source": "DEFAULT — UNMEASURED",
+      "raw_median_dbm": null
+    }
+  ],
+  "resolution_order": [
+    "1. Exact match on platform + model identifier.",
+    "2. Match on platform + manufacturer wildcard.",
+    "3. default_dbm.",
+    "Implementations MUST NOT infer a calibration value from anything observed over the radio. Inferring the peer's model from its radio behaviour would rebuild exactly the fingerprint that quantisation exists to suppress (BANDING.md §3)."
+  ],
+  "open_question": "How large is the real spread across our target device set? Published figures for comparable programmes suggest roughly 30 dB (-45 to -75). If our measured spread is materially wider, the seven-value grid is too coarse and the accuracy-versus-fingerprint trade in SPEC.md §3.2 needs revisiting with real numbers."
+}

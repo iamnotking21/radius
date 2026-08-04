@@ -1,0 +1,135 @@
+{
+  "schema": "radius.ble.vectors.banding/v0",
+  "spec": "mobile/protocol/BANDING.md v0",
+  "description": "RSSI -> validity gate -> outlier gate -> Kalman -> normalise -> band + hysteresis. Table-drive: feed rssi_dbm in order, assert every field after each step.",
+  "constants": { "TX_REF_DBM": -60, "Q": 1.0, "R": 16.0, "WARMUP_SAMPLES": 3, "STABLE_SAMPLES": 10, "OUTLIER_GATE_DB": 20.0, "MAX_CONSEC_REJECT": 3, "H_IN_DB": 3.0, "H_OUT_DB": 2.0, "K_IN": 3, "K_OUT": 2 },
+  "tolerance": { "adjusted_dbm": 0.000001 },
+  "cases": [
+    {
+      "name": "warmup-to-close",
+      "tx_power_cal_dbm": -60,
+      "steps": [
+        { "step": 1, "rssi_dbm": -68, "accepted": true, "filter_reinit": false, "samples": 1, "adjusted_dbm": -68.000000, "band": "UNKNOWN", "confidence": "WARMING" },
+        { "step": 2, "rssi_dbm": -67, "accepted": true, "filter_reinit": false, "samples": 2, "adjusted_dbm": -67.484848, "band": "UNKNOWN", "confidence": "WARMING" },
+        { "step": 3, "rssi_dbm": -69, "accepted": true, "filter_reinit": false, "samples": 3, "adjusted_dbm": -68.039616, "band": "CLOSE", "confidence": "COARSE" },
+        { "step": 4, "rssi_dbm": -68, "accepted": true, "filter_reinit": false, "samples": 4, "adjusted_dbm": -68.027730, "band": "CLOSE", "confidence": "COARSE" },
+        { "step": 5, "rssi_dbm": -68, "accepted": true, "filter_reinit": false, "samples": 5, "adjusted_dbm": -68.020351, "band": "CLOSE", "confidence": "COARSE" }
+      ]
+    },
+    {
+      "name": "boundary-no-flap",
+      "tx_power_cal_dbm": -60,
+      "steps": [
+        { "step": 1, "rssi_dbm": -54, "accepted": true, "filter_reinit": false, "samples": 1, "adjusted_dbm": -54.000000, "band": "UNKNOWN", "confidence": "WARMING" },
+        { "step": 2, "rssi_dbm": -56, "accepted": true, "filter_reinit": false, "samples": 2, "adjusted_dbm": -55.030303, "band": "UNKNOWN", "confidence": "WARMING" },
+        { "step": 3, "rssi_dbm": -54, "accepted": true, "filter_reinit": false, "samples": 3, "adjusted_dbm": -54.653061, "band": "HERE", "confidence": "COARSE" },
+        { "step": 4, "rssi_dbm": -56, "accepted": true, "filter_reinit": false, "samples": 4, "adjusted_dbm": -55.057192, "band": "HERE", "confidence": "COARSE" },
+        { "step": 5, "rssi_dbm": -54, "accepted": true, "filter_reinit": false, "samples": 5, "adjusted_dbm": -54.775900, "band": "HERE", "confidence": "COARSE" },
+        { "step": 6, "rssi_dbm": -56, "accepted": true, "filter_reinit": false, "samples": 6, "adjusted_dbm": -55.078637, "band": "HERE", "confidence": "COARSE" },
+        { "step": 7, "rssi_dbm": -54, "accepted": true, "filter_reinit": false, "samples": 7, "adjusted_dbm": -54.823504, "band": "HERE", "confidence": "COARSE" },
+        { "step": 8, "rssi_dbm": -56, "accepted": true, "filter_reinit": false, "samples": 8, "adjusted_dbm": -55.094329, "band": "HERE", "confidence": "COARSE" },
+        { "step": 9, "rssi_dbm": -54, "accepted": true, "filter_reinit": false, "samples": 9, "adjusted_dbm": -54.846548, "band": "HERE", "confidence": "COARSE" },
+        { "step": 10, "rssi_dbm": -56, "accepted": true, "filter_reinit": false, "samples": 10, "adjusted_dbm": -55.105104, "band": "HERE", "confidence": "STABLE" },
+        { "step": 11, "rssi_dbm": -54, "accepted": true, "filter_reinit": false, "samples": 11, "adjusted_dbm": -54.858894, "band": "HERE", "confidence": "STABLE" },
+        { "step": 12, "rssi_dbm": -56, "accepted": true, "filter_reinit": false, "samples": 12, "adjusted_dbm": -55.112183, "band": "HERE", "confidence": "STABLE" }
+      ]
+    },
+    {
+      "name": "promote-close-to-here",
+      "tx_power_cal_dbm": -60,
+      "steps": [
+        { "step": 1, "rssi_dbm": -68, "accepted": true, "filter_reinit": false, "samples": 1, "adjusted_dbm": -68.000000, "band": "UNKNOWN", "confidence": "WARMING" },
+        { "step": 2, "rssi_dbm": -68, "accepted": true, "filter_reinit": false, "samples": 2, "adjusted_dbm": -68.000000, "band": "UNKNOWN", "confidence": "WARMING" },
+        { "step": 3, "rssi_dbm": -68, "accepted": true, "filter_reinit": false, "samples": 3, "adjusted_dbm": -68.000000, "band": "CLOSE", "confidence": "COARSE" },
+        { "step": 4, "rssi_dbm": -48, "accepted": true, "filter_reinit": false, "samples": 4, "adjusted_dbm": -61.999265, "band": "CLOSE", "confidence": "COARSE" },
+        { "step": 5, "rssi_dbm": -48, "accepted": true, "filter_reinit": false, "samples": 5, "adjusted_dbm": -58.274412, "band": "CLOSE", "confidence": "COARSE" },
+        { "step": 6, "rssi_dbm": -48, "accepted": true, "filter_reinit": false, "samples": 6, "adjusted_dbm": -55.733409, "band": "CLOSE", "confidence": "COARSE" },
+        { "step": 7, "rssi_dbm": -48, "accepted": true, "filter_reinit": false, "samples": 7, "adjusted_dbm": -53.904205, "band": "CLOSE", "confidence": "COARSE" },
+        { "step": 8, "rssi_dbm": -48, "accepted": true, "filter_reinit": false, "samples": 8, "adjusted_dbm": -52.545078, "band": "CLOSE", "confidence": "COARSE" },
+        { "step": 9, "rssi_dbm": -48, "accepted": true, "filter_reinit": false, "samples": 9, "adjusted_dbm": -51.515967, "band": "CLOSE", "confidence": "COARSE" },
+        { "step": 10, "rssi_dbm": -48, "accepted": true, "filter_reinit": false, "samples": 10, "adjusted_dbm": -50.727833, "band": "CLOSE", "confidence": "STABLE" },
+        { "step": 11, "rssi_dbm": -48, "accepted": true, "filter_reinit": false, "samples": 11, "adjusted_dbm": -50.120091, "band": "HERE", "confidence": "STABLE" },
+        { "step": 12, "rssi_dbm": -48, "accepted": true, "filter_reinit": false, "samples": 12, "adjusted_dbm": -49.649500, "band": "HERE", "confidence": "STABLE" },
+        { "step": 13, "rssi_dbm": -48, "accepted": true, "filter_reinit": false, "samples": 13, "adjusted_dbm": -49.284190, "band": "HERE", "confidence": "STABLE" }
+      ]
+    },
+    {
+      "name": "demote-close-to-around",
+      "tx_power_cal_dbm": -60,
+      "steps": [
+        { "step": 1, "rssi_dbm": -68, "accepted": true, "filter_reinit": false, "samples": 1, "adjusted_dbm": -68.000000, "band": "UNKNOWN", "confidence": "WARMING" },
+        { "step": 2, "rssi_dbm": -68, "accepted": true, "filter_reinit": false, "samples": 2, "adjusted_dbm": -68.000000, "band": "UNKNOWN", "confidence": "WARMING" },
+        { "step": 3, "rssi_dbm": -68, "accepted": true, "filter_reinit": false, "samples": 3, "adjusted_dbm": -68.000000, "band": "CLOSE", "confidence": "COARSE" },
+        { "step": 4, "rssi_dbm": -86, "accepted": true, "filter_reinit": false, "samples": 4, "adjusted_dbm": -73.400662, "band": "CLOSE", "confidence": "COARSE" },
+        { "step": 5, "rssi_dbm": -86, "accepted": true, "filter_reinit": false, "samples": 5, "adjusted_dbm": -76.753029, "band": "AROUND", "confidence": "COARSE" },
+        { "step": 6, "rssi_dbm": -86, "accepted": true, "filter_reinit": false, "samples": 6, "adjusted_dbm": -79.039932, "band": "AROUND", "confidence": "COARSE" },
+        { "step": 7, "rssi_dbm": -86, "accepted": true, "filter_reinit": false, "samples": 7, "adjusted_dbm": -80.686216, "band": "AROUND", "confidence": "COARSE" },
+        { "step": 8, "rssi_dbm": -86, "accepted": true, "filter_reinit": false, "samples": 8, "adjusted_dbm": -81.909430, "band": "AROUND", "confidence": "COARSE" },
+        { "step": 9, "rssi_dbm": -86, "accepted": true, "filter_reinit": false, "samples": 9, "adjusted_dbm": -82.835630, "band": "AROUND", "confidence": "COARSE" },
+        { "step": 10, "rssi_dbm": -86, "accepted": true, "filter_reinit": false, "samples": 10, "adjusted_dbm": -83.544950, "band": "AROUND", "confidence": "STABLE" }
+      ]
+    },
+    {
+      "name": "outlier-spike-rejected",
+      "tx_power_cal_dbm": -60,
+      "steps": [
+        { "step": 1, "rssi_dbm": -68, "accepted": true, "filter_reinit": false, "samples": 1, "adjusted_dbm": -68.000000, "band": "UNKNOWN", "confidence": "WARMING" },
+        { "step": 2, "rssi_dbm": -68, "accepted": true, "filter_reinit": false, "samples": 2, "adjusted_dbm": -68.000000, "band": "UNKNOWN", "confidence": "WARMING" },
+        { "step": 3, "rssi_dbm": -68, "accepted": true, "filter_reinit": false, "samples": 3, "adjusted_dbm": -68.000000, "band": "CLOSE", "confidence": "COARSE" },
+        { "step": 4, "rssi_dbm": -20, "accepted": false, "filter_reinit": false, "samples": 3, "adjusted_dbm": -68.000000, "band": "CLOSE", "confidence": "COARSE" },
+        { "step": 5, "rssi_dbm": -68, "accepted": true, "filter_reinit": false, "samples": 4, "adjusted_dbm": -68.000000, "band": "CLOSE", "confidence": "COARSE" },
+        { "step": 6, "rssi_dbm": -68, "accepted": true, "filter_reinit": false, "samples": 5, "adjusted_dbm": -68.000000, "band": "CLOSE", "confidence": "COARSE" }
+      ]
+    },
+    {
+      "name": "txcal-loud-device",
+      "tx_power_cal_dbm": -50,
+      "steps": [
+        { "step": 1, "rssi_dbm": -78, "accepted": true, "filter_reinit": false, "samples": 1, "adjusted_dbm": -88.000000, "band": "UNKNOWN", "confidence": "WARMING" },
+        { "step": 2, "rssi_dbm": -78, "accepted": true, "filter_reinit": false, "samples": 2, "adjusted_dbm": -88.000000, "band": "UNKNOWN", "confidence": "WARMING" },
+        { "step": 3, "rssi_dbm": -78, "accepted": true, "filter_reinit": false, "samples": 3, "adjusted_dbm": -88.000000, "band": "EDGE", "confidence": "COARSE" },
+        { "step": 4, "rssi_dbm": -78, "accepted": true, "filter_reinit": false, "samples": 4, "adjusted_dbm": -88.000000, "band": "EDGE", "confidence": "COARSE" },
+        { "step": 5, "rssi_dbm": -78, "accepted": true, "filter_reinit": false, "samples": 5, "adjusted_dbm": -88.000000, "band": "EDGE", "confidence": "COARSE" }
+      ]
+    },
+    {
+      "name": "txcal-quiet-device",
+      "tx_power_cal_dbm": -70,
+      "steps": [
+        { "step": 1, "rssi_dbm": -58, "accepted": true, "filter_reinit": false, "samples": 1, "adjusted_dbm": -48.000000, "band": "UNKNOWN", "confidence": "WARMING" },
+        { "step": 2, "rssi_dbm": -58, "accepted": true, "filter_reinit": false, "samples": 2, "adjusted_dbm": -48.000000, "band": "UNKNOWN", "confidence": "WARMING" },
+        { "step": 3, "rssi_dbm": -58, "accepted": true, "filter_reinit": false, "samples": 3, "adjusted_dbm": -48.000000, "band": "HERE", "confidence": "COARSE" },
+        { "step": 4, "rssi_dbm": -58, "accepted": true, "filter_reinit": false, "samples": 4, "adjusted_dbm": -48.000000, "band": "HERE", "confidence": "COARSE" },
+        { "step": 5, "rssi_dbm": -58, "accepted": true, "filter_reinit": false, "samples": 5, "adjusted_dbm": -48.000000, "band": "HERE", "confidence": "COARSE" }
+      ]
+    },
+    {
+      "name": "out-of-range",
+      "tx_power_cal_dbm": -60,
+      "steps": [
+        { "step": 1, "rssi_dbm": -100, "accepted": true, "filter_reinit": false, "samples": 1, "adjusted_dbm": -100.000000, "band": "UNKNOWN", "confidence": "WARMING" },
+        { "step": 2, "rssi_dbm": -100, "accepted": true, "filter_reinit": false, "samples": 2, "adjusted_dbm": -100.000000, "band": "UNKNOWN", "confidence": "WARMING" },
+        { "step": 3, "rssi_dbm": -100, "accepted": true, "filter_reinit": false, "samples": 3, "adjusted_dbm": -100.000000, "band": "OUT_OF_RANGE", "confidence": "COARSE" },
+        { "step": 4, "rssi_dbm": -100, "accepted": true, "filter_reinit": false, "samples": 4, "adjusted_dbm": -100.000000, "band": "OUT_OF_RANGE", "confidence": "COARSE" },
+        { "step": 5, "rssi_dbm": -100, "accepted": true, "filter_reinit": false, "samples": 5, "adjusted_dbm": -100.000000, "band": "OUT_OF_RANGE", "confidence": "COARSE" }
+      ]
+    },
+    {
+      "name": "step-change-reinit-edge-to-here",
+      "tx_power_cal_dbm": -60,
+      "steps": [
+        { "step": 1, "rssi_dbm": -93, "accepted": true, "filter_reinit": false, "samples": 1, "adjusted_dbm": -93.000000, "band": "UNKNOWN", "confidence": "WARMING" },
+        { "step": 2, "rssi_dbm": -93, "accepted": true, "filter_reinit": false, "samples": 2, "adjusted_dbm": -93.000000, "band": "UNKNOWN", "confidence": "WARMING" },
+        { "step": 3, "rssi_dbm": -93, "accepted": true, "filter_reinit": false, "samples": 3, "adjusted_dbm": -93.000000, "band": "EDGE", "confidence": "COARSE" },
+        { "step": 4, "rssi_dbm": -50, "accepted": false, "filter_reinit": false, "samples": 3, "adjusted_dbm": -93.000000, "band": "EDGE", "confidence": "COARSE" },
+        { "step": 5, "rssi_dbm": -50, "accepted": false, "filter_reinit": false, "samples": 3, "adjusted_dbm": -93.000000, "band": "EDGE", "confidence": "COARSE" },
+        { "step": 6, "rssi_dbm": -50, "accepted": true, "filter_reinit": true, "samples": 1, "adjusted_dbm": -50.000000, "band": "EDGE", "confidence": "COARSE" },
+        { "step": 7, "rssi_dbm": -50, "accepted": true, "filter_reinit": false, "samples": 2, "adjusted_dbm": -50.000000, "band": "EDGE", "confidence": "COARSE" },
+        { "step": 8, "rssi_dbm": -50, "accepted": true, "filter_reinit": false, "samples": 3, "adjusted_dbm": -50.000000, "band": "HERE", "confidence": "COARSE" },
+        { "step": 9, "rssi_dbm": -50, "accepted": true, "filter_reinit": false, "samples": 4, "adjusted_dbm": -50.000000, "band": "HERE", "confidence": "COARSE" },
+        { "step": 10, "rssi_dbm": -50, "accepted": true, "filter_reinit": false, "samples": 5, "adjusted_dbm": -50.000000, "band": "HERE", "confidence": "COARSE" },
+        { "step": 11, "rssi_dbm": -50, "accepted": true, "filter_reinit": false, "samples": 6, "adjusted_dbm": -50.000000, "band": "HERE", "confidence": "COARSE" }
+      ]
+    }
+  ]
+}

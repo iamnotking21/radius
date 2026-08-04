@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  All user-visible copy lives here, never inline in Compose. Two reasons: translation, and the
+  fact that safety copy gets reviewed and must be findable in one place.
+
+  COPY RULES for this product:
+   - never promise continuous background discovery (standing risk R1). Hedge honestly.
+   - distance is always hedged. "about", "roughly". Never a precise metre count, because the
+     number shown is a band midpoint plus jitter, not a measurement (safety invariant 2).
+   - no manufactured urgency, no countdowns, no "someone viewed you". All banned.
+-->
+<resources>
+    <string name="app_name">Radius</string>
+
+    <!-- navigation -->
+    <string name="tab_discover">Discover</string>
+    <string name="tab_radar">Radar</string>
+    <string name="tab_threads">Threads</string>
+    <string name="nav_bar_label">Main sections</string>
+
+    <!-- discover -->
+    <string name="discover_title">Discover</string>
+    <string name="discover_empty">Your set for today will appear here.</string>
+    <string name="discover_placeholder_note">Placeholder. Discover is not implemented yet.</string>
+
+    <!-- radar -->
+    <string name="radar_title">Radar</string>
+    <string name="radar_ghost_label">Ghost mode</string>
+    <string name="radar_ghost_description">Stay on Radar but stop being visible to others. Takes effect immediately.</string>
+    <string name="radar_ghost_on_announcement">Ghost mode on. You are no longer visible.</string>
+    <string name="radar_ghost_off_announcement">Ghost mode off. You are visible again.</string>
+    <string name="radar_start">Start Radar</string>
+    <string name="radar_stop">Stop Radar</string>
+    <string name="radar_empty">Nobody nearby right now.</string>
+    <string name="radar_list_heading">People nearby</string>
+    <string name="radar_list_a11y_note">List of everyone currently on the radar. Same information as the dial.</string>
+    <string name="radar_placeholder_note">Placeholder. The radio is not wired up yet.</string>
+
+    <!-- distance bands. Hedged on purpose. -->
+    <string name="band_here">Right here</string>
+    <string name="band_close">Close by</string>
+    <string name="band_around">Around</string>
+    <string name="band_edge">On the edge</string>
+
+    <!-- threads -->
+    <string name="threads_title">Threads</string>
+    <string name="threads_empty">Conversations you start will live here, however you met.</string>
+    <string name="threads_transport_ble">Nearby</string>
+    <string name="threads_transport_online">Online</string>
+    <string name="threads_placeholder_note">Placeholder. Messaging is not implemented yet.</string>
+
+    <!-- radar foreground service notification. This is a UI surface: it is the most-seen screen
+         in the whole product for an active user, and it is the user's proof that we are honest
+         about when the radio is on. -->
+    <string name="radar_notification_channel_name">Radar</string>
+    <string name="radar_notification_channel_description">Shown whenever Radar is discovering people nearby.</string>
+    <string name="radar_notification_title">Radar is on</string>
+    <string name="radar_notification_text">Discovering people nearby. Your location is never used or stored.</string>
+    <string name="radar_notification_text_ghost">Ghost mode. You can see others; they cannot see you.</string>
+    <string name="radar_notification_stop">Turn off</string>
+</resources>

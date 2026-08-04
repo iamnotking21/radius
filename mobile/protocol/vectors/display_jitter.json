@@ -1,0 +1,58 @@
+{
+  "schema": "radius.ble.vectors.display_jitter/v0",
+  "spec": "mobile/protocol/BANDING.md v0 §6.2",
+  "description": "Display-metre derivation. Generated with real HMAC-SHA256 (OpenSSL 3.5.6). The displayed value is a function of (session_salt, local_peer_id, band) and NEVER of RSSI — that is the whole security property. See BANDING.md §6.1.",
+  "algorithm": [
+    "seed   = HMAC-SHA256(key = session_salt, message = local_peer_id || band_ordinal_byte)",
+    "u32    = big-endian uint32 of seed[0..3]",
+    "u      = u32 / 2^32",
+    "offset = (u * 2 - 1) * span(band)",
+    "metres = round_half_away_from_zero(midpoint(band) + offset)",
+    "metres = clamp(metres, midpoint - span, midpoint + span)"
+  ],
+  "band_display": {
+    "HERE":   { "ordinal": 0, "midpoint_m": 1,  "span_m": 0,  "range_m": [1, 1] },
+    "CLOSE":  { "ordinal": 1, "midpoint_m": 6,  "span_m": 2,  "range_m": [4, 8] },
+    "AROUND": { "ordinal": 2, "midpoint_m": 20, "span_m": 6,  "range_m": [14, 26] },
+    "EDGE":   { "ordinal": 3, "midpoint_m": 65, "span_m": 20, "range_m": [45, 85] }
+  },
+  "session_salt_hex": "8ef5bbe99212d66cc2b6c1076493aa84c642566ffa107dd41febfeffb2467d81",
+  "session_salt_note": "Fixed here for reproducibility. In production it is 32 CSPRNG bytes per Radar session, never persisted, never transmitted.",
+  "tolerance": { "u": 0.000000001 },
+  "cases": [
+    { "name": "peer1-here",   "local_peer_id_hex": "0123456789abcdef0123456789abcdef", "band": "HERE",
+      "expect_hmac_hex": "b1320ca2a034c38bc1d434004cef2f04327ce2bad6b08034ce0af0532fbac82e",
+      "expect_u32": 2972847266, "expect_u": 0.692169942, "expect_display_metres": 1 },
+    { "name": "peer1-close",  "local_peer_id_hex": "0123456789abcdef0123456789abcdef", "band": "CLOSE",
+      "expect_hmac_hex": "4be97e643b19164db70b6e61c6e26c69d4070a36ab9eeb249174abd2e54733aa",
+      "expect_u32": 1273593444, "expect_u": 0.296531581, "expect_display_metres": 5 },
+    { "name": "peer1-around", "local_peer_id_hex": "0123456789abcdef0123456789abcdef", "band": "AROUND",
+      "expect_hmac_hex": "487e5ea055436ab4a1e617d1db70df151908b888e866d268e84f5a2545b9f49f",
+      "expect_u32": 1216241312, "expect_u": 0.283178248, "expect_display_metres": 17 },
+    { "name": "peer1-edge",   "local_peer_id_hex": "0123456789abcdef0123456789abcdef", "band": "EDGE",
+      "expect_hmac_hex": "b77933c1aeaa733ebe67b743b902cb642527195bd83dd96e3cd75845db39ef7a",
+      "expect_u32": 3078173633, "expect_u": 0.716693148, "expect_display_metres": 74 },
+    { "name": "peer2-here",   "local_peer_id_hex": "ffeeddccbbaa998877665544332211ff", "band": "HERE",
+      "expect_hmac_hex": "871ed8b0206c636630bde9883e8d59765dfb21920e73ee240f504fbde723ea73",
+      "expect_u32": 2266945712, "expect_u": 0.527814429, "expect_display_metres": 1 },
+    { "name": "peer2-close",  "local_peer_id_hex": "ffeeddccbbaa998877665544332211ff", "band": "CLOSE",
+      "expect_hmac_hex": "082ad8456f579105e2b24d824684690d03cb2244c9aab2a5dbdba385f3a6640e",
+      "expect_u32": 137025605, "expect_u": 0.031903760, "expect_display_metres": 4 },
+    { "name": "peer2-around", "local_peer_id_hex": "ffeeddccbbaa998877665544332211ff", "band": "AROUND",
+      "expect_hmac_hex": "408b1645662806b8934d44f33a9481a5bfaefad51ce490a53704a6f97289900f",
+      "expect_u32": 1082857029, "expect_u": 0.252122299, "expect_display_metres": 17 },
+    { "name": "peer2-edge",   "local_peer_id_hex": "ffeeddccbbaa998877665544332211ff", "band": "EDGE",
+      "expect_hmac_hex": "fdb8f0c926871308b146ca6571d29dae8b0ec5f232a1e31f507e5d51d985ac21",
+      "expect_u32": 4256755913, "expect_u": 0.991103219, "expect_display_metres": 85 }
+  ],
+  "property_assertions": [
+    { "name": "deterministic",
+      "note": "Same (salt, peer, band) MUST always produce the same metres. Re-evaluating on every UI frame must not change the number." },
+    { "name": "independent-of-rssi",
+      "note": "The derivation takes no RSSI input. A test that feeds different RSSI values within the same band MUST observe an unchanged displayed value. This is the anti-averaging property (BANDING.md §6.1)." },
+    { "name": "within-band-range",
+      "note": "For every band, output MUST fall inside band_display.range_m." },
+    { "name": "differs-across-sessions",
+      "note": "A different session_salt MUST, with overwhelming probability, produce a different value for the same peer and band." }
+  ]
+}

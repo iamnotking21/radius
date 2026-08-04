@@ -1,0 +1,205 @@
+{
+  "schema": "radius.ble.vectors.key_rotation/v0.1",
+  "spec": "mobile/protocol/KEY_SCHEDULE.md v0.1 §8 (key ring + seam) and §9.6 (self/twin rejection)",
+  "adr": "ADR-008 — account_key is server-issued. M4 requires rotation to exist and be tested.",
+  "description": "Key-ring resolution vectors. NEW in v0.1. The DERIVATION IS UNCHANGED from v0 — every ephemeral_id below is one of the values already asserted in key_schedule.json, or was generated the same way (OpenSSL 3.5.6, HKDF-SHA256, RFC 5869 verified). What is new is the predicate that selects WHICH account_key derives a given epoch. Nothing here is hardware-validated; these vectors prove arithmetic only.",
+
+  "why_this_file_exists": [
+    "account_key is now rotatable (ADR-008 M4). A rotation must not produce two valid ephemeral_ids for one device in one epoch, and must not produce a gap.",
+    "The failure mode this file is built to catch: an implementation that resolves the active kid ONCE per table build instead of ONCE PER EPOCH. That bug produces exactly one wrong epoch per rotation per user, and passes every test that does not straddle a seam. Every ring below is queried across its seam on purpose.",
+    "Second failure mode: applying the new kid to the epoch BEFORE the seam (off-by-one), which silently un-discovers a user for 15 minutes at every rotation."
+  ],
+
+  "model": {
+    "KeyRingEntry": "{ kid: uint32, account_key: bytes[32], eff_day: uint32, eff_epoch: uint16 }",
+    "active(ring, d, e)": "the entry with the GREATEST (eff_day, eff_epoch) such that (eff_day, eff_epoch) <= (d, e), lexicographic",
+    "note": "kid is bookkeeping. It is never transmitted, never derived from, and never on the air.",
+    "derivation": "unchanged — see key_schedule.json params. salt 'radius/ble/v0', info 'daily-key'||u32be(day) and 'ephemeral-id'||u32be(day)||u16be(epoch)."
+  },
+
+  "account_keys": {
+    "AK1": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+    "AK2": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+    "AK3": "fd382d41d1bde51b32970ac6b8222ba8aa70e96391be6f47913eb8be84c5c0ff"
+  },
+
+  "rings": {
+    "RING_A": {
+      "note": "SCHEDULED rotation (§8.3): eff_epoch = 0, i.e. a UTC DAY boundary. The routine case — reinstall, device change, recovery, cadence.",
+      "entries": [
+        { "kid": 0, "account_key": "AK3", "eff_day": 0,     "eff_epoch": 0 },
+        { "kid": 1, "account_key": "AK1", "eff_day": 20670, "eff_epoch": 0 }
+      ]
+    },
+    "RING_B": {
+      "note": "EMERGENCY rotation (§8.3): mid-day seam at epoch 1. Day 20669 therefore carries TWO kids for one device. This is the case that breaks naive resolvers.",
+      "entries": [
+        { "kid": 0, "account_key": "AK1", "eff_day": 0,     "eff_epoch": 0 },
+        { "kid": 1, "account_key": "AK3", "eff_day": 20669, "eff_epoch": 1 }
+      ]
+    },
+    "RING_C": {
+      "note": "TWO rotations, the second one epoch after the first. Deliberately adversarial: kid1 is active for exactly ONE epoch. An implementation that resolves the ring once per day, or once per table build, gets this wrong.",
+      "entries": [
+        { "kid": 0, "account_key": "AK1", "eff_day": 0,     "eff_epoch": 0 },
+        { "kid": 1, "account_key": "AK2", "eff_day": 20669, "eff_epoch": 0 },
+        { "kid": 2, "account_key": "AK3", "eff_day": 20669, "eff_epoch": 1 }
+      ]
+    },
+    "RING_D": {
+      "note": "Ring whose first entry is NOT at (0,0). Used only to assert E_NO_ACTIVE_KEY before the first key.",
+      "entries": [
+        { "kid": 0, "account_key": "AK1", "eff_day": 20669, "eff_epoch": 0 }
+      ]
+    }
+  },
+
+  "cases": [
+
+    { "name": "A-before-seam-day",        "ring": "RING_A", "day_index": 20669, "epoch_index": 0,
+      "expect_kid": 0, "expect_ephemeral_id_hex": "e2d788cb4e8015eed55da41c3de188b6" },
+    { "name": "A-before-seam-mid",        "ring": "RING_A", "day_index": 20669, "epoch_index": 1,
+      "expect_kid": 0, "expect_ephemeral_id_hex": "d9bc28cf7a59441c63444155ef6e4d26" },
+    { "name": "A-before-seam-next",       "ring": "RING_A", "day_index": 20669, "epoch_index": 2,
+      "expect_kid": 0, "expect_ephemeral_id_hex": "0605935efeeb2b8c17dd10bb1c4e773d" },
+    { "name": "A-last-epoch-before-seam", "ring": "RING_A", "day_index": 20669, "epoch_index": 95,
+      "expect_kid": 0, "expect_ephemeral_id_hex": "b5838f2738ffbba849e38aefd234f688",
+      "note": "the epoch immediately before the seam. MUST still be the OLD key." },
+    { "name": "A-seam-epoch",             "ring": "RING_A", "day_index": 20670, "epoch_index": 0,
+      "expect_kid": 1, "expect_ephemeral_id_hex": "023630c4a48083bf0b67807a5e69778f",
+      "note": "the seam. eff_day/eff_epoch is INCLUSIVE — the new key is active AT its effective boundary, not after it." },
+
+    { "name": "B-epoch-zero-of-time",     "ring": "RING_B", "day_index": 0,     "epoch_index": 0,
+      "expect_kid": 0, "expect_ephemeral_id_hex": "be42ba8d9968b7e0a3c68f98f1f92ff2" },
+    { "name": "B-last-epoch-before-seam", "ring": "RING_B", "day_index": 20669, "epoch_index": 0,
+      "expect_kid": 0, "expect_ephemeral_id_hex": "fb7a44650af26582280ba34024a53c8d" },
+    { "name": "B-seam-epoch",             "ring": "RING_B", "day_index": 20669, "epoch_index": 1,
+      "expect_kid": 1, "expect_ephemeral_id_hex": "d9bc28cf7a59441c63444155ef6e4d26",
+      "note": "mid-day seam. The SAME day now yields two different daily keys for one device — one per kid. Resolvers must handle this." },
+    { "name": "B-after-seam",             "ring": "RING_B", "day_index": 20669, "epoch_index": 2,
+      "expect_kid": 1, "expect_ephemeral_id_hex": "0605935efeeb2b8c17dd10bb1c4e773d" },
+    { "name": "B-after-seam-last-epoch",  "ring": "RING_B", "day_index": 20669, "epoch_index": 95,
+      "expect_kid": 1, "expect_ephemeral_id_hex": "b5838f2738ffbba849e38aefd234f688" },
+    { "name": "B-day-rollover-after-seam","ring": "RING_B", "day_index": 20670, "epoch_index": 0,
+      "expect_kid": 1, "expect_ephemeral_id_hex": "8fa2162cd8bf2d6ddf9f9a348ac7fbb4",
+      "note": "day rollover under the new kid. Both the day and the key changed since B-epoch-zero-of-time; only the day changed since B-after-seam-last-epoch." },
+
+    { "name": "C-before-any-rotation",    "ring": "RING_C", "day_index": 0,     "epoch_index": 0,
+      "expect_kid": 0, "expect_ephemeral_id_hex": "be42ba8d9968b7e0a3c68f98f1f92ff2" },
+    { "name": "C-day-before-first-seam",  "ring": "RING_C", "day_index": 20668, "epoch_index": 95,
+      "expect_kid": 0, "expect_ephemeral_id_hex": "97fcbe7ebd60ed02dde5025426873e7d",
+      "note": "one epoch before the first rotation, across a day boundary as well." },
+    { "name": "C-first-seam",             "ring": "RING_C", "day_index": 20669, "epoch_index": 0,
+      "expect_kid": 1, "expect_ephemeral_id_hex": "099a52b227529153097a981ff7179cac",
+      "note": "kid1 is active for EXACTLY ONE epoch." },
+    { "name": "C-second-seam",            "ring": "RING_C", "day_index": 20669, "epoch_index": 1,
+      "expect_kid": 2, "expect_ephemeral_id_hex": "d9bc28cf7a59441c63444155ef6e4d26",
+      "must_not_equal_ephemeral_id_hex": "7846020cb9cc7f6b5b729f5629827f1d",
+      "note": "TRAP. 7846020c… is what kid1 (AK2) would produce at this epoch. An implementation that resolved the ring at the START of the day and cached it returns that value and is WRONG. active() is evaluated per epoch, never per day and never per table build." },
+    { "name": "C-after-second-seam",      "ring": "RING_C", "day_index": 20669, "epoch_index": 2,
+      "expect_kid": 2, "expect_ephemeral_id_hex": "0605935efeeb2b8c17dd10bb1c4e773d" },
+    { "name": "C-end-of-day",             "ring": "RING_C", "day_index": 20669, "epoch_index": 95,
+      "expect_kid": 2, "expect_ephemeral_id_hex": "b5838f2738ffbba849e38aefd234f688" },
+
+    { "name": "single-entry-ring-at-its-own-boundary", "ring": "RING_D", "day_index": 20669, "epoch_index": 0,
+      "expect_kid": 0, "expect_ephemeral_id_hex": "fb7a44650af26582280ba34024a53c8d" }
+  ],
+
+  "skew_window_across_seam": [
+    {
+      "name": "window-straddles-seam-RING_C",
+      "note": "KEY_SCHEDULE.md §8.4, THE seam answer. At the seam epoch the receiver's accepted window {e-1, e, e+1} spans TWO kids. This is NOT two identities in one epoch — it is one identity per epoch over a window that happens to straddle a seam. Each epoch in the window is derived under the kid active AT THAT EPOCH.",
+      "ring": "RING_C", "day_index": 20669, "current_epoch_index": 1,
+      "expect_window": [
+        { "epoch_index": 0, "kid": 1, "ephemeral_id_hex": "099a52b227529153097a981ff7179cac" },
+        { "epoch_index": 1, "kid": 2, "ephemeral_id_hex": "d9bc28cf7a59441c63444155ef6e4d26" },
+        { "epoch_index": 2, "kid": 2, "ephemeral_id_hex": "0605935efeeb2b8c17dd10bb1c4e773d" }
+      ],
+      "assert_distinct": true,
+      "assert_exactly_one_per_epoch": true
+    },
+    {
+      "name": "window-straddles-seam-RING_A-day-boundary",
+      "note": "the same property across a DAY seam: e-1 is the last epoch of day 20669 under kid0, e is epoch 0 of day 20670 under kid1. The window crosses both a day boundary and a key boundary at once.",
+      "ring": "RING_A", "day_index": 20670, "current_epoch_index": 0,
+      "expect_window": [
+        { "day_index": 20669, "epoch_index": 95, "kid": 0, "ephemeral_id_hex": "b5838f2738ffbba849e38aefd234f688" },
+        { "day_index": 20670, "epoch_index": 0,  "kid": 1, "ephemeral_id_hex": "023630c4a48083bf0b67807a5e69778f" }
+      ],
+      "assert_distinct": true,
+      "assert_exactly_one_per_epoch": true
+    }
+  ],
+
+  "self_eid_rejection": {
+    "note": "KEY_SCHEDULE.md §9.6. A receiver MUST discard any frame whose ephemeral_id equals one of ITS OWN eids in its own accepted window, before resolution. Own state is deliberately set exactly ON a seam, so the own-window spans two kids.",
+    "own_state": { "own_ring": "RING_C", "own_day_index": 20669, "own_epoch_index": 1, "own_window_epochs": [0, 1, 2] },
+    "cases": [
+    { "name": "self-current-epoch",  "observed_ephemeral_id_hex": "d9bc28cf7a59441c63444155ef6e4d26", "expect": "DROP", "expect_error": "E_SELF_EID" },
+    { "name": "self-previous-epoch-different-kid", "observed_ephemeral_id_hex": "099a52b227529153097a981ff7179cac", "expect": "DROP", "expect_error": "E_SELF_EID",
+      "note": "the important one: our own previous-epoch eid was derived under a DIFFERENT kid. Self-rejection must be evaluated over the window under the ring, not against a single cached current eid." },
+    { "name": "self-next-epoch",     "observed_ephemeral_id_hex": "0605935efeeb2b8c17dd10bb1c4e773d", "expect": "DROP", "expect_error": "E_SELF_EID" },
+    { "name": "not-self-other-account", "observed_ephemeral_id_hex": "fb7a44650af26582280ba34024a53c8d", "expect": "PASS_TO_RESOLUTION",
+      "note": "AK1 at (20669,0). Under RING_C epoch 0 belongs to kid1 (AK2), so this value is not ours." },
+    { "name": "not-self-wrong-kid-trap", "observed_ephemeral_id_hex": "e2d788cb4e8015eed55da41c3de188b6", "expect": "PASS_TO_RESOLUTION",
+      "note": "TRAP. AK3 at (20669,0). AK3 IS in our ring as kid2 — but kid2 is not active at epoch 0, so this is NOT one of our eids. An implementation that self-rejects by 'any key in my ring, any epoch in the window' wrongly drops this frame and goes partially blind after every rotation." },
+    { "name": "not-self-unrelated",  "observed_ephemeral_id_hex": "97fcbe7ebd60ed02dde5025426873e7d", "expect": "PASS_TO_RESOLUTION" }
+    ]
+  },
+
+  "invalid": [
+    { "name": "ring-empty",
+      "ring_entries": [],
+      "day_index": 20669, "epoch_index": 0,
+      "expect_error": "E_NO_ACTIVE_KEY" },
+
+    { "name": "query-before-first-entry",
+      "ring": "RING_D", "day_index": 20668, "epoch_index": 95,
+      "expect_error": "E_NO_ACTIVE_KEY",
+      "note": "a gap before the ring's first key is a FAULT, not a silent empty result. kid 0 is issued with eff (0,0) in production, so this is unreachable in practice and must still be handled." },
+
+    { "name": "duplicate-effective-boundary",
+      "ring_entries": [
+        { "kid": 0, "account_key": "AK1", "eff_day": 20669, "eff_epoch": 0 },
+        { "kid": 1, "account_key": "AK2", "eff_day": 20669, "eff_epoch": 0 }
+      ],
+      "expect_error": "E_KEY_RING_NOT_MONOTONIC",
+      "note": "two keys effective at the same instant is exactly the 'two valid ephemeral_ids in one epoch' state the seam rule forbids. Reject the ring; do not tie-break on kid." },
+
+    { "name": "kid-order-disagrees-with-time-order",
+      "ring_entries": [
+        { "kid": 0, "account_key": "AK1", "eff_day": 0,     "eff_epoch": 0 },
+        { "kid": 2, "account_key": "AK2", "eff_day": 20669, "eff_epoch": 1 },
+        { "kid": 1, "account_key": "AK3", "eff_day": 20669, "eff_epoch": 5 }
+      ],
+      "expect_error": "E_KEY_RING_NOT_MONOTONIC",
+      "note": "kid must increase in the same order as effective_from. A ring where it does not is either a server bug or a reordering attack on the ring delivery." },
+
+    { "name": "effective-epoch-out-of-range",
+      "ring_entries": [
+        { "kid": 0, "account_key": "AK1", "eff_day": 0,     "eff_epoch": 0 },
+        { "kid": 1, "account_key": "AK2", "eff_day": 20669, "eff_epoch": 96 }
+      ],
+      "expect_error": "E_EPOCH_INDEX_OUT_OF_RANGE",
+      "note": "same rule as key_schedule.json: epoch index is 0..95 and 96 is a clock or encoding bug. MUST fault, MUST NOT clamp." },
+
+    { "name": "account-key-wrong-length-in-ring",
+      "ring_entries": [
+        { "kid": 0, "account_key_hex": "000102030405060708090a0b0c0d0e0f", "eff_day": 0, "eff_epoch": 0 }
+      ],
+      "expect_error": "E_ACCOUNT_KEY_LENGTH" }
+  ],
+
+  "accepted_not_rejected": [
+    { "name": "effective-from-already-in-the-past",
+      "note": "DELIBERATELY NOT AN ERROR (KEY_SCHEDULE.md §8.3). The server must issue with effective_from in the future; a CLIENT must accept a ring entry whose effective_from has already passed, because that is the normal state for a device returning from a week offline. Do not add a symmetric client-side 'must be in the future' check — it bricks exactly the devices that most need to catch up.",
+      "ring": "RING_B", "device_wallclock_day": 20670, "device_wallclock_epoch": 0,
+      "expect": "ACCEPT", "expect_active_kid_now": 1 }
+  ],
+
+  "not_covered_here": [
+    "Whether rotation is observable on air. It is not (§8.8), and that is a design argument, not something these vectors can test.",
+    "Whether the server actually delivers rings correctly, whether issuance is pinned, or whether M1-M7 hold. Those are backend and security-privacy concerns.",
+    "Anything requiring a radio. As with every file in this directory: a green run proves the arithmetic and says NOTHING about on-air behaviour."
+  ]
+}

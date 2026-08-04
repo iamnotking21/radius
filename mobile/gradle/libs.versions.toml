@@ -1,0 +1,108 @@
+# Radius mobile — version catalog
+#
+# !! UNVERIFIED !!  No JDK on the authoring machine (blocker B5), so no version in this file
+# has been resolved by Gradle. Treat every pin as a proposal until `./gradlew build` runs green
+# on a machine with JDK 17+. Do not cite a green build that has not happened.
+
+[versions]
+# --- core ---
+kotlin              = "2.1.20"
+agp                 = "8.9.0"
+coroutines          = "1.10.1"
+datetime            = "0.6.1"
+serialization       = "1.8.0"
+atomicfu            = "0.27.0"
+
+# --- persistence (ADR-007: SQLDelight, NOT Room, NOT GRDB) ---
+sqldelight          = "2.0.2"
+sqlcipher           = "4.6.1"      # android artifact; iOS links SQLCipher via CocoaPods/SPM
+sqliteAndroid       = "2.4.0"
+
+# --- network ---
+# NOTE: connect-kotlin is JVM/Android ONLY (OkHttp-based). It CANNOT be used in commonMain.
+# Provisional multiplatform stack pending founder sign-off — see 20-state OPEN QUESTIONS:
+#   Wire  -> protobuf codegen with Kotlin/Native support
+#   Ktor  -> multiplatform HTTP transport; Connect protocol is plain HTTP POST over it
+wire                = "5.3.0"
+ktor                = "3.1.1"
+
+# --- android ui ---
+composeBom          = "2025.03.00"
+composeCompiler     = "1.5.15"
+activityCompose     = "1.10.1"
+coreKtx             = "1.15.0"
+lifecycle           = "2.8.7"
+hilt                = "2.55"       # ANDROID UI GRAPH ONLY. never in commonMain. see ADR-007.
+ksp                 = "2.1.20-1.0.31"  # MUST track `kotlin` above exactly. bump together or neither.
+workManager         = "2.10.0"
+
+# --- crypto ---
+tink                = "1.16.0"     # android only
+
+# --- test ---
+junit               = "4.13.2"
+androidxTestJunit   = "1.2.1"
+espresso            = "3.6.1"
+turbine             = "1.2.0"
+kotest              = "5.9.1"
+
+[libraries]
+# --- kotlin common ---
+kotlinx-coroutines-core       = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-core",        version.ref = "coroutines" }
+kotlinx-coroutines-android    = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-android",     version.ref = "coroutines" }
+kotlinx-coroutines-test       = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-test",        version.ref = "coroutines" }
+kotlinx-datetime              = { module = "org.jetbrains.kotlinx:kotlinx-datetime",               version.ref = "datetime" }
+kotlinx-serialization-core    = { module = "org.jetbrains.kotlinx:kotlinx-serialization-core",     version.ref = "serialization" }
+kotlinx-atomicfu              = { module = "org.jetbrains.kotlinx:atomicfu",                       version.ref = "atomicfu" }
+
+# --- sqldelight ---
+sqldelight-runtime            = { module = "app.cash.sqldelight:runtime",                          version.ref = "sqldelight" }
+sqldelight-coroutines         = { module = "app.cash.sqldelight:coroutines-extensions",            version.ref = "sqldelight" }
+sqldelight-driver-android     = { module = "app.cash.sqldelight:android-driver",                   version.ref = "sqldelight" }
+sqldelight-driver-native      = { module = "app.cash.sqldelight:native-driver",                    version.ref = "sqldelight" }
+sqldelight-driver-jvm         = { module = "app.cash.sqldelight:sqlite-driver",                    version.ref = "sqldelight" }
+sqlcipher-android             = { module = "net.zetetic:sqlcipher-android",                        version.ref = "sqlcipher" }
+androidx-sqlite               = { module = "androidx.sqlite:sqlite",                               version.ref = "sqliteAndroid" }
+
+# --- network (provisional) ---
+wire-runtime                  = { module = "com.squareup.wire:wire-runtime",                       version.ref = "wire" }
+ktor-client-core              = { module = "io.ktor:ktor-client-core",                             version.ref = "ktor" }
+ktor-client-okhttp            = { module = "io.ktor:ktor-client-okhttp",                           version.ref = "ktor" }
+ktor-client-darwin            = { module = "io.ktor:ktor-client-darwin",                           version.ref = "ktor" }
+
+# --- android ui ---
+compose-bom                   = { module = "androidx.compose:compose-bom",                         version.ref = "composeBom" }
+compose-ui                    = { module = "androidx.compose.ui:ui" }
+compose-ui-graphics           = { module = "androidx.compose.ui:ui-graphics" }
+compose-ui-tooling            = { module = "androidx.compose.ui:ui-tooling" }
+compose-ui-tooling-preview    = { module = "androidx.compose.ui:ui-tooling-preview" }
+compose-material3             = { module = "androidx.compose.material3:material3" }
+androidx-activity-compose     = { module = "androidx.activity:activity-compose",                   version.ref = "activityCompose" }
+androidx-core-ktx             = { module = "androidx.core:core-ktx",                               version.ref = "coreKtx" }
+androidx-lifecycle-runtime    = { module = "androidx.lifecycle:lifecycle-runtime-ktx",             version.ref = "lifecycle" }
+androidx-lifecycle-service    = { module = "androidx.lifecycle:lifecycle-service",                 version.ref = "lifecycle" }
+androidx-work-runtime         = { module = "androidx.work:work-runtime-ktx",                       version.ref = "workManager" }
+hilt-android                  = { module = "com.google.dagger:hilt-android",                       version.ref = "hilt" }
+hilt-compiler                 = { module = "com.google.dagger:hilt-android-compiler",              version.ref = "hilt" }
+
+# --- crypto ---
+tink-android                  = { module = "com.google.crypto.tink:tink-android",                  version.ref = "tink" }
+
+# --- test ---
+junit                         = { module = "junit:junit",                                          version.ref = "junit" }
+androidx-test-junit           = { module = "androidx.test.ext:junit",                              version.ref = "androidxTestJunit" }
+androidx-test-espresso        = { module = "androidx.test.espresso:espresso-core",                 version.ref = "espresso" }
+turbine                       = { module = "app.cash.turbine:turbine",                             version.ref = "turbine" }
+kotest-assertions             = { module = "io.kotest:kotest-assertions-core",                     version.ref = "kotest" }
+
+[plugins]
+kotlinMultiplatform  = { id = "org.jetbrains.kotlin.multiplatform",        version.ref = "kotlin" }
+kotlinAndroid        = { id = "org.jetbrains.kotlin.android",              version.ref = "kotlin" }
+kotlinSerialization  = { id = "org.jetbrains.kotlin.plugin.serialization", version.ref = "kotlin" }
+composeCompilerPlugin = { id = "org.jetbrains.kotlin.plugin.compose",      version.ref = "kotlin" }
+androidApplication   = { id = "com.android.application",                   version.ref = "agp" }
+androidLibrary       = { id = "com.android.library",                       version.ref = "agp" }
+sqldelight           = { id = "app.cash.sqldelight",                       version.ref = "sqldelight" }
+wire                 = { id = "com.squareup.wire",                         version.ref = "wire" }
+hilt                 = { id = "com.google.dagger.hilt.android",            version.ref = "hilt" }
+ksp                  = { id = "com.google.devtools.ksp",                   version.ref = "ksp" }

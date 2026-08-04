@@ -1,0 +1,133 @@
+{
+  "schema": "radius.ble.vectors.adv_assembly/v0",
+  "spec": "mobile/protocol/SPEC.md v0 §5",
+  "description": "Full BLE advertising-data assembly and parsing, both carriers. Carrier A cases MUST encode and decode. Carrier B cases carry no frame on air and MUST report carrier=GATT_PULL so the scanner knows to connect.",
+  "service_uuid": {
+    "uuid16": "0xFDA9",
+    "uuid16_on_air_little_endian": "a9fd",
+    "uuid128_expanded": "0000FDA9-0000-1000-8000-00805F9B34FB",
+    "status": "PROVISIONAL — NOT SIG-ALLOCATED — MUST NOT SHIP. See SPEC.md §4.1."
+  },
+  "budget": {
+    "legacy_adv_max_bytes": 31,
+    "carrier_a_used_bytes": 30,
+    "carrier_b_used_bytes": 7,
+    "note": "Carrier A leaves 1 spare byte. The 7 bytes between the 19-byte frame and the 26 B ceiling in CLAUDE.md are AD-header margin and are not spendable (SPEC.md §5.1)."
+  },
+  "cases": [
+    {
+      "name": "carrier-a-nominal",
+      "carrier": "SERVICE_DATA",
+      "adv_hex": "0201060303a9fd1616a9fd01fb7a44650af26582280ba34024a53c8dc401",
+      "adv_length_bytes": 30,
+      "structures": [
+        { "length": "0x02", "ad_type": "0x01", "name": "Flags", "value_hex": "06", "note": "LE General Discoverable | BR/EDR Not Supported" },
+        { "length": "0x03", "ad_type": "0x03", "name": "Complete List of 16-bit Service UUIDs", "value_hex": "a9fd" },
+        { "length": "0x16", "ad_type": "0x16", "name": "Service Data - 16-bit UUID", "value_hex": "a9fd01fb7a44650af26582280ba34024a53c8dc401" }
+      ],
+      "expect": {
+        "carrier": "SERVICE_DATA",
+        "frame_hex": "01fb7a44650af26582280ba34024a53c8dc401",
+        "fields": {
+          "version": 1,
+          "ephemeral_id_hex": "fb7a44650af26582280ba34024a53c8d",
+          "tx_power_cal_dbm": -60,
+          "connectable": true
+        }
+      }
+    },
+    {
+      "name": "carrier-a-not-connectable",
+      "carrier": "SERVICE_DATA",
+      "adv_hex": "0201060303a9fd1616a9fd01a1e38f76e2380e9590fefb156e6f8874d300",
+      "adv_length_bytes": 30,
+      "expect": {
+        "carrier": "SERVICE_DATA",
+        "frame_hex": "01a1e38f76e2380e9590fefb156e6f8874d300",
+        "fields": {
+          "version": 1,
+          "ephemeral_id_hex": "a1e38f76e2380e9590fefb156e6f8874",
+          "tx_power_cal_dbm": -45,
+          "connectable": false
+        }
+      }
+    },
+    {
+      "name": "carrier-b-uuid-only",
+      "carrier": "GATT_PULL",
+      "note": "An iOS peripheral. No frame on air. The scanner must connect and read beacon_payload.",
+      "adv_hex": "0201060303a9fd",
+      "adv_length_bytes": 7,
+      "expect": {
+        "carrier": "GATT_PULL",
+        "frame_hex": null,
+        "action": "CONNECT_AND_READ_BEACON_PAYLOAD"
+      }
+    },
+    {
+      "name": "carrier-b-uuid-only-no-flags-ad",
+      "carrier": "GATT_PULL",
+      "note": "Some stacks emit the Flags AD themselves and it may not appear in what the app receives. Absence of the Flags structure MUST NOT cause rejection.",
+      "adv_hex": "0303a9fd",
+      "adv_length_bytes": 4,
+      "expect": {
+        "carrier": "GATT_PULL",
+        "frame_hex": null,
+        "action": "CONNECT_AND_READ_BEACON_PAYLOAD"
+      }
+    },
+    {
+      "name": "foreign-service-data-ignored",
+      "carrier": "NONE",
+      "note": "Service data for a different 16-bit UUID (0xFD6F). MUST be ignored entirely, not parsed as ours.",
+      "adv_hex": "02010603036ffd05166ffd0102",
+      "expect": {
+        "carrier": "NONE",
+        "action": "IGNORE"
+      }
+    },
+    {
+      "name": "our-uuid-with-truncated-service-data",
+      "carrier": "SERVICE_DATA",
+      "note": "Service data present for our UUID but only 4 payload bytes. Malformed, not a GATT_PULL peer.",
+      "adv_hex": "0201060303a9fd0716a9fd01fb7a44",
+      "expect": {
+        "carrier": "SERVICE_DATA",
+        "expect_error": "E_SHORT_FRAME"
+      }
+    },
+    {
+      "name": "ad-length-overruns-buffer",
+      "note": "AD structure claims a length that runs past the end of the buffer. Classic parser overrun. MUST be rejected without reading out of bounds.",
+      "adv_hex": "0201061f16a9fd01fb7a44",
+      "expect": {
+        "expect_error": "E_AD_MALFORMED"
+      }
+    },
+    {
+      "name": "ad-zero-length-structure",
+      "note": "A zero length byte must terminate parsing, not loop forever.",
+      "adv_hex": "02010600000000",
+      "expect": {
+        "carrier": "NONE",
+        "action": "IGNORE"
+      }
+    },
+    {
+      "name": "empty-advertisement",
+      "adv_hex": "",
+      "expect": {
+        "carrier": "NONE",
+        "action": "IGNORE"
+      }
+    },
+    {
+      "name": "duplicate-service-data-for-our-uuid",
+      "note": "Two Service Data structures for our UUID. Ambiguous and not something a conformant peripheral emits. Reject rather than pick one.",
+      "adv_hex": "0201061616a9fd01fb7a44650af26582280ba34024a53c8dc4011616a9fd01a1e38f76e2380e9590fefb156e6f8874d300",
+      "expect": {
+        "expect_error": "E_AD_MALFORMED"
+      }
+    }
+  ]
+}

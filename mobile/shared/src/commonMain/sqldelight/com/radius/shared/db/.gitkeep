@@ -1,0 +1,11 @@
+# SQLDelight schema root for the `RadiusDatabase` declared in mobile/shared/build.gradle.kts.
+#
+# Empty on purpose. Tables land with the persistence task, not with this scaffold.
+#
+# Rules for whatever lands here:
+#  - RAW SQL ONLY. No ORM — root CLAUDE.md BANNED. SQLDelight is the mobile analogue of sqlc.
+#  - Encrypted at rest via SQLCipher on both platforms.
+#  - Retention is enforced in SQL, not hoped for: encounters 30d (24h free tier), face vectors
+#    <=30d, then HARD delete. Not a soft-delete flag. A deleted row is a gone row.
+#  - NO latitude, NO longitude, NO bearing column, ever (safety invariant 1).
+#  - NO call content column, ever (calling invariant C2).

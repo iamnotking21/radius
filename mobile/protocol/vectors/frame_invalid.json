@@ -1,0 +1,138 @@
+{
+  "schema": "radius.ble.vectors.frame_invalid/v0",
+  "spec": "mobile/protocol/SPEC.md v0 §3.6",
+  "description": "Every case MUST be rejected with exactly `expect_error`. A decoder that accepts any of these, or returns a different error code, fails conformance. Rejection MUST be silent: no peer instance, no UI, no payload in logs.",
+  "validation_order": [
+    "1. length != 19            -> E_SHORT_FRAME / E_LONG_FRAME",
+    "2. version != 0x01         -> E_UNSUPPORTED_VERSION",
+    "3. tx_power_cal not legal  -> E_TX_POWER_NOT_ALLOWED",
+    "4. flags & 0xFE != 0       -> E_RESERVED_FLAG_SET",
+    "5. ephemeral_id reserved   -> E_EPHEMERAL_ID_RESERVED"
+  ],
+  "validation_order_note": "Order is normative so that multi-fault frames produce a deterministic error on both platforms. See the multi-fault cases at the end.",
+  "cases": [
+    {
+      "name": "empty",
+      "hex": "",
+      "expect_error": "E_SHORT_FRAME"
+    },
+    {
+      "name": "single-byte",
+      "hex": "01",
+      "expect_error": "E_SHORT_FRAME"
+    },
+    {
+      "name": "eighteen-bytes-truncated",
+      "note": "one byte short; the flags byte is missing",
+      "hex": "01fb7a44650af26582280ba34024a53c8dc4",
+      "expect_error": "E_SHORT_FRAME"
+    },
+    {
+      "name": "twenty-bytes-trailing-zero",
+      "note": "trailing bytes are a covert channel; strict length is a safety control, not pedantry (SPEC.md §3.1)",
+      "hex": "01fb7a44650af26582280ba34024a53c8dc40100",
+      "expect_error": "E_LONG_FRAME"
+    },
+    {
+      "name": "twenty-bytes-trailing-data",
+      "hex": "01fb7a44650af26582280ba34024a53c8dc401ff",
+      "expect_error": "E_LONG_FRAME"
+    },
+    {
+      "name": "version-zero",
+      "hex": "00fb7a44650af26582280ba34024a53c8dc401",
+      "expect_error": "E_UNSUPPORTED_VERSION"
+    },
+    {
+      "name": "version-future",
+      "note": "a v1 device's frame. v0 decoders reject rather than guess.",
+      "hex": "02fb7a44650af26582280ba34024a53c8dc401",
+      "expect_error": "E_UNSUPPORTED_VERSION"
+    },
+    {
+      "name": "version-max",
+      "hex": "fffb7a44650af26582280ba34024a53c8dc401",
+      "expect_error": "E_UNSUPPORTED_VERSION"
+    },
+    {
+      "name": "tx-power-zero-dbm",
+      "note": "0 dBm is not a plausible calibrated-at-1m value and is not on the legal grid",
+      "hex": "01fb7a44650af26582280ba34024a53c8d0001",
+      "expect_error": "E_TX_POWER_NOT_ALLOWED"
+    },
+    {
+      "name": "tx-power-off-grid-minus-59",
+      "note": "-59 dBm is in range but off the 5 dB grid. Rejecting off-grid values closes the byte as a covert channel (SPEC.md §3.2).",
+      "hex": "01fb7a44650af26582280ba34024a53c8dc501",
+      "expect_error": "E_TX_POWER_NOT_ALLOWED"
+    },
+    {
+      "name": "tx-power-positive",
+      "note": "+20 dBm, 0x14",
+      "hex": "01fb7a44650af26582280ba34024a53c8d1401",
+      "expect_error": "E_TX_POWER_NOT_ALLOWED"
+    },
+    {
+      "name": "tx-power-far-too-low",
+      "note": "-128 dBm, 0x80",
+      "hex": "01fb7a44650af26582280ba34024a53c8d8001",
+      "expect_error": "E_TX_POWER_NOT_ALLOWED"
+    },
+    {
+      "name": "reserved-flag-bit1",
+      "note": "the single lowest reserved bit. 7 tolerated reserved bits would be a 7-bit-per-frame covert channel (SPEC.md §3.3).",
+      "hex": "01fb7a44650af26582280ba34024a53c8dc402",
+      "expect_error": "E_RESERVED_FLAG_SET"
+    },
+    {
+      "name": "reserved-flag-bit2-with-connectable",
+      "hex": "01fb7a44650af26582280ba34024a53c8dc405",
+      "expect_error": "E_RESERVED_FLAG_SET"
+    },
+    {
+      "name": "reserved-flag-all-set",
+      "hex": "01fb7a44650af26582280ba34024a53c8dc4ff",
+      "expect_error": "E_RESERVED_FLAG_SET"
+    },
+    {
+      "name": "reserved-flag-high-bit",
+      "hex": "01fb7a44650af26582280ba34024a53c8dc480",
+      "expect_error": "E_RESERVED_FLAG_SET"
+    },
+    {
+      "name": "ephemeral-id-all-zero",
+      "note": "reserved sentinel; what an uninitialised implementation emits (SPEC.md §3.5)",
+      "hex": "0100000000000000000000000000000000c401",
+      "expect_error": "E_EPHEMERAL_ID_RESERVED"
+    },
+    {
+      "name": "ephemeral-id-all-ones",
+      "hex": "01ffffffffffffffffffffffffffffffffc401",
+      "expect_error": "E_EPHEMERAL_ID_RESERVED"
+    },
+    {
+      "name": "multifault-short-and-bad-version",
+      "note": "length is checked first, so the error is the length error",
+      "hex": "02fb7a44650af26582280ba34024a5",
+      "expect_error": "E_SHORT_FRAME"
+    },
+    {
+      "name": "multifault-bad-version-and-bad-tx",
+      "note": "version is checked before tx power",
+      "hex": "02fb7a44650af26582280ba34024a53c8d0001",
+      "expect_error": "E_UNSUPPORTED_VERSION"
+    },
+    {
+      "name": "multifault-bad-tx-and-reserved-flag",
+      "note": "tx power is checked before flags",
+      "hex": "01fb7a44650af26582280ba34024a53c8d00ff",
+      "expect_error": "E_TX_POWER_NOT_ALLOWED"
+    },
+    {
+      "name": "multifault-reserved-flag-and-reserved-eid",
+      "note": "flags are checked before the ephemeral id",
+      "hex": "0100000000000000000000000000000000c4ff",
+      "expect_error": "E_RESERVED_FLAG_SET"
+    }
+  ]
+}

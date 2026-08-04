@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Platform theme only. It exists to control the window before Compose takes over — nothing else.
+  The actual look of the app is defined in ui/theme/RadiusTheme.kt from design tokens.
+
+  Parent is the framework Material theme, not AppCompat: this app has no AppCompat dependency and
+  does not need one. ComponentActivity does not require an AppCompat theme.
+-->
+<resources>
+    <style name="Theme.Radius" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@android:color/black</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:windowLightStatusBar">false</item>
+    </style>
+</resources>

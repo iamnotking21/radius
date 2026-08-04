@@ -1,0 +1,69 @@
+{
+  "schema": "radius.ble.vectors.frame_valid/v0",
+  "spec": "mobile/protocol/SPEC.md v0 §3",
+  "description": "Round-trip vectors. Each case MUST decode to `fields`, and encoding `fields` MUST reproduce `hex` byte-for-byte. Run both directions.",
+  "frame_length_bytes": 19,
+  "layout": [
+    { "offset": 0,  "size": 1,  "field": "version",      "type": "uint8", "note": "v0 protocol => 0x01" },
+    { "offset": 1,  "size": 16, "field": "ephemeral_id", "type": "bytes", "note": "derivation order, never byte-swapped" },
+    { "offset": 17, "size": 1,  "field": "tx_power_cal", "type": "int8",  "note": "dBm, one of the seven legal values" },
+    { "offset": 18, "size": 1,  "field": "flags",        "type": "uint8", "note": "bit0 CONNECTABLE; bits 1-7 reserved, MUST be 0" }
+  ],
+  "legal_tx_power_dbm": [-75, -70, -65, -60, -55, -50, -45],
+  "legal_tx_power_bytes": ["0xB5", "0xBA", "0xBF", "0xC4", "0xC9", "0xCE", "0xD3"],
+  "cases": [
+    {
+      "name": "nominal-connectable",
+      "note": "ephemeral_id taken from key_schedule.json case ak1-20260804-000000",
+      "hex": "01fb7a44650af26582280ba34024a53c8dc401",
+      "fields": {
+        "version": 1,
+        "ephemeral_id_hex": "fb7a44650af26582280ba34024a53c8d",
+        "tx_power_cal_dbm": -60,
+        "connectable": true
+      }
+    },
+    {
+      "name": "not-connectable-max-tx",
+      "note": "tx_power_cal at the loud end of the legal grid; CONNECTABLE=0 is only ever emitted by Android peripherals (SPEC.md §3.3)",
+      "hex": "01a1e38f76e2380e9590fefb156e6f8874d300",
+      "fields": {
+        "version": 1,
+        "ephemeral_id_hex": "a1e38f76e2380e9590fefb156e6f8874",
+        "tx_power_cal_dbm": -45,
+        "connectable": false
+      }
+    },
+    {
+      "name": "min-tx-connectable",
+      "hex": "015694f0adea17de5936f2ce34efb48a09b501",
+      "fields": {
+        "version": 1,
+        "ephemeral_id_hex": "5694f0adea17de5936f2ce34efb48a09",
+        "tx_power_cal_dbm": -75,
+        "connectable": true
+      }
+    },
+    {
+      "name": "all-flags-clear",
+      "hex": "01e2d788cb4e8015eed55da41c3de188b6ce00",
+      "fields": {
+        "version": 1,
+        "ephemeral_id_hex": "e2d788cb4e8015eed55da41c3de188b6",
+        "tx_power_cal_dbm": -50,
+        "connectable": false
+      }
+    },
+    {
+      "name": "ephemeral-id-high-byte-set",
+      "note": "guards against sign-extension bugs when the first eid byte is >= 0x80",
+      "hex": "01fb7a44650af26582280ba34024a53c8dc900",
+      "fields": {
+        "version": 1,
+        "ephemeral_id_hex": "fb7a44650af26582280ba34024a53c8d",
+        "tx_power_cal_dbm": -55,
+        "connectable": false
+      }
+    }
+  ]
+}
