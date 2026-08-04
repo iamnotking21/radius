@@ -1,95 +1,98 @@
-# Radius — Project Scaffold
+# Radius
 
-This is the operating system for the Radius build: the technical plan, the permanent
-project memory, and fourteen expert sub-agents that coordinate through it.
+Premium dating app. The moat is **BLE proximity** — finding and chatting with people nearby, with no internet. Online mode is normal worldwide dating. Native iOS + Android, Go backend, self-hosted.
 
-## What's here
+> **Status: Phase 0 — BLE feasibility spike. NOT YET PROVEN.**
+> The Android code builds and its tests pass. **No radio has been touched, no device has run it, and no measurement exists.** A green test run means the codec is arithmetically correct; it says nothing about whether the product is possible. See [`docs/PHASE0_GO_NO_GO.md`](docs/PHASE0_GO_NO_GO.md), whose verdict section currently reads *NOT YET REACHED*.
+
+---
+
+## Three modes
+
+- **DISCOVER** — online dating. A finite daily set. No swipe deck.
+- **RADAR** — BLE nearby. Works offline.
+- **THREADS** — one inbox, both origins, transport labelled.
+
+## What actually exists today
+
+| Area | State |
+|---|---|
+| BLE wire spec + 116 conformance vectors | Written, executing, security-reviewed |
+| Protocol codec (frame, key schedule, banding) | One Kotlin implementation, 63 tests green |
+| Android radio (`android.bluetooth.le`) | Real advertise + scan, role-gated, never on a device |
+| Phase 0 spike harness | Built. Logs raw sightings + radio lifecycle, counts its own losses |
+| CI gates | 6 gates, 39 self-tests, running on GitHub Actions |
+| iOS | Scaffold only. Has never been compiled — needs a Mac |
+| Backend, web, infra, design tokens | **Nothing.** Not started, correctly — Phase 0 gates them |
+
+Roughly **4%** of v1. The advanced part is the moat; almost everything else is zero.
+
+## The constraints that shape everything
+
+**Ten safety invariants** and **eight calling invariants** in [`CLAUDE.md`](CLAUDE.md) block a merge if violated. The load-bearing ones:
+
+- No map, no bearing, no lat/lng anywhere — city resolution is geohash5 at most
+- Distance is four bands only, displayed hedged and jittered
+- The BLE payload carries no name, no account id, no stable identifier
+- Ephemeral IDs rotate every 15 min, and the MAC rotates in step — **both or neither**
+- Messages are E2EE; the server holds ciphertext only
+- Phone numbers are never exchanged; calls are never recorded — no content column exists, by design
+- No dark patterns, enumerated and banned
+
+Several are mechanically enforced in CI, not left to review.
+
+## What we learned in Phase 0 that changed the design
+
+These were found before a line of product code was written, which is the entire point of a spike.
+
+- **iOS cannot advertise service or manufacturer data in any state** — not a background restriction, an API limit. Found independently by two agents from opposite platforms. The 19-byte frame therefore travels over a **second carrier** (a GATT read) on iOS rather than degrading.
+- **RPA co-rotation is uncontrollable and chipset-dependent.** Safety invariant 5 is a *per-device-model* property, not a per-platform one. This is the open question most likely to kill the thesis, and it needs a hardware sniffer — an app cannot observe its own MAC address.
+- **Two devices sharing an account broadcast an identical ephemeral ID from two locations.** A stationary second device becomes a live-ID oracle at a known address — a stalking primitive requiring no tailing. Hence: exactly one advertising device per account, everything else scan-only, fail-closed.
+- **The scan mode we started with was 100% duty against a contracted 30%.** No build would ever have reported it.
+
+## Repository map
+
+Exactly one writer per path. Cross-boundary changes go through the orchestrator as a HANDOFF ([`ORCHESTRATION.md`](.claude/ORCHESTRATION.md) §4).
 
 ```
-CLAUDE.md                  Root memory. Caveman-compressed. Read on every session.
-README.md                  This file.
-
+CLAUDE.md              Root memory. Read every session.
 docs/
-  TECH_STACK_AND_PLAN.md   The CTO document. Full architecture, stack, phasing,
-                           team, cost, risk. Readable prose — share this with
-                           investors and new hires.
-  adr/                     Architecture Decision Records. 6 seeded + template.
-
-.claude/
-  ORCHESTRATION.md         How the 14 agents work together without collisions.
-  memory/
-    00-project.md          Immutable project facts
-    10-stack.md            Locked stack decisions
-    20-state.md            LIVE STATE — updated every session, by every agent
-    30-decisions.md        Append-only decision log
-    40-contracts.md        Shared interfaces — the only legitimate coupling point
-    50-glossary.md         Exact vocabulary (wave, handshake, band, people)
-    60-blockers.md         Live blockers + standing risks
-  agents/                  14 expert sub-agent definitions
-
-backend/CLAUDE.md          Per-folder memory. Loads when working in that folder.
-mobile/CLAUDE.md
-website/CLAUDE.md
-devops/CLAUDE.md
+  TECH_STACK_AND_PLAN.md   Full architecture, phasing, cost, risk
+  PHASE0_GO_NO_GO.md       Decision thresholds, pre-committed before any data
+  adr/                     9 Architecture Decision Records + template
+mobile/
+  protocol/            BLE wire spec + conformance vectors (prose + data)
+  shared/              KMP core — codec, key schedule, banding, domain
+  android/             Compose app + Phase 0 spike harness
+  ios/                 SwiftUI shell. Uncompiled.
+devops/ci/             Gates, runner, workflows
+.claude/memory/        Live state, decision log, contracts, blockers
 ```
 
-## Setup
+**Mobile is Kotlin Multiplatform with native UI** — shared logic, SwiftUI on iOS, Compose on Android. See [ADR-007](docs/adr/ADR-007-kotlin-multiplatform-shared-core.md). KMP does **not** share the radio layer; that is written twice, deliberately.
 
-Copy `CLAUDE.md`, `README.md`, `docs/`, `.claude/` and the four folder-level
-`CLAUDE.md` files into your existing repo alongside `backend/ mobile/ website/ devops/`.
+## Building
 
-Then, in Claude Code from the repo root:
+Android needs JDK 17+ and the Android SDK. iOS needs macOS — Kotlin/Native iOS targets do not compile anywhere else.
 
-```
-> read CLAUDE.md and .claude/ORCHESTRATION.md, then use the orchestrator agent
-> to plan Phase 0
+```bash
+cd mobile && ./gradlew :android:assembleDebug :shared:testDebugUnitTest
 ```
 
-The orchestrator reads the memory, states the current blocker, and dispatches.
+The build prints a loud warning on non-macOS hosts that iOS targets were skipped. That warning is deliberate: it exists so nobody reports cross-platform parity from a build that never compiled half of it.
 
-## The 14 agents
+## The rules that make parallel work possible
 
-| Agent | Owns | Model |
-|---|---|---|
-| `orchestrator` | Routing, contracts, ADRs, memory | opus |
-| `ble-protocol` | `mobile/protocol/` — the BLE wire law | opus |
-| `ios-swift` | `mobile/ios/` | opus |
-| `android-kotlin` | `mobile/android/` | opus |
-| `backend-go` | `backend/` | opus |
-| `calling-webrtc` | `backend/services/calling/`, coturn | opus |
-| `growth-conversion` | `backend/services/billing/`, paywalls | opus |
-| `devops-tencent` | `devops/` | opus |
-| `web-next` | `website/` | sonnet |
-| `design-system` | `mobile/design-tokens/` | sonnet |
-| `data-ml` | ranking + analytics | opus |
-| `security-privacy` | Review-only gate. No write tools. | opus |
-| `qa-test` | Tests, hardware rig, release gates | sonnet |
-| `code-reviewer` | Review-only. No write tools. | opus |
+**Contract first.** A protobuf, BLE spec, or shared-API change is reviewed and merged *alone*, with consumers notified, before any implementation depends on it. Never the reverse.
 
-Exactly one writer per path. Cross-boundary changes go through the orchestrator
-as a HANDOFF (format in `ORCHESTRATION.md` §4).
+**Memory updated every session.** Every agent rewrites [`20-state.md`](.claude/memory/20-state.md) before finishing. Without the ritual it decays into fiction within a week.
 
-## The three lines that don't move
+**Never report unverified work as verified.** Files carry `UNVERIFIED` markers until a compiler or a device says otherwise. A gate that cannot run yet fails loudly rather than passing on nothing.
 
-The root `CLAUDE.md` carries three sets of invariants that block a merge if violated:
-the **10 safety invariants** (no map, no bearing, no precise location, banded distance only),
-the **8 calling invariants** (numbers never exchanged, never recorded, invited not cold-rung),
-and the **banned dark patterns** list. Any agent asked to weaken one refuses and escalates
-to a human. `ADR-004`, `ADR-005` and `ADR-006` explain why each line is where it is.
+## What is blocking
 
-## The two rules that make this work
+Phase 0 cannot complete from a keyboard. It needs:
 
-**1. Contract first.** A protobuf or BLE spec change is reviewed, merged alone,
-and its consumers notified — *before* any implementation depends on it. Never the
-reverse. This is what lets a dozen people and fourteen agents work in parallel.
-
-**2. Memory updated every session.** Every agent rewrites `20-state.md` before
-finishing. A session that skips it is incomplete. This is the permanent memory —
-without the ritual it decays into fiction within a week.
-
-## Where to start
-
-Phase 0 is a **BLE feasibility spike** and it blocks everything else. Three weeks,
-real hardware, real numbers. The one that can kill the thesis is the
-Android→backgrounded-iOS discovery rate. See `docs/adr/ADR-004` and
-`docs/TECH_STACK_AND_PLAN.md` §6.7 and §11.
+- Android handsets across chipset vendors, budget MediaTek first
+- 3× nRF52840 dongles, one per advertising channel — one dongle cannot distinguish a missed packet from an absent one, and the question is about absence
+- A legal entity → Bluetooth SIG Adopter → a real service UUID. The provisional one is blocked from release builds by CI, deliberately and indefinitely.
