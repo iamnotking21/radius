@@ -1,0 +1,115 @@
+# .gitea/workflows/ci.yml — ORDINARY PUSH / PR PATH, SELF-HOSTED GITEA ACTIONS
+#
+# Owner: devops-tencent. THIS IS THE DESTINATION; .github/workflows/ci.yml is the interim.
+# ADR-003 + root CLAUDE.md: "CI: Gitea Actions self-host".
+#
+# STATUS: DORMANT UNTIL BLOCKER B3 CLOSES. No Gitea instance exists because Tencent is not
+# provisioned. This file is committed now, not later, for one reason: the two providers must share
+# their stage definitions from day one, or the "temporary" GitHub workflow becomes the only one that
+# is ever maintained and the migration back to Gitea quietly becomes a rewrite.
+#
+# HOW DRIFT IS PREVENTED: this file and .github/workflows/ci.yml contain ZERO commands of their own.
+# Both call devops/ci/runner/run-stage.sh with the same stage names. Change a stage in one place.
+# The differences between the two files are exactly three, all of them genuinely provider-specific:
+#   1. `runs-on` labels          — hosted images vs our runner labels.
+#   2. `actions/setup-java`      — absent here. A self-hosted runner IMAGE provides JDK 21 and the
+#                                  Android SDK (devops/ci/runner/README.md). Downloading a JDK on
+#                                  every run of a machine we own is waste, and it is one less
+#                                  external action to trust.
+#   3. the conformance job       — see HANDOFF-1 below.
+#
+# BEFORE THIS FILE CAN RUN, devops-tencent must (all tracked in devops/ci/runner/README.md):
+#   * provision Gitea + act_runner in OpenTofu/Ansible. Nothing configured by hand, ever.
+#   * build the runner image: JDK 21 (Temurin), Android SDK platform 35 + build-tools, Node 20+,
+#     bash, coreutils, git. NO Mac needed for the Android path.
+#   * register the runner with labels: self-hosted, linux, android.
+#   * set Gitea's DEFAULT_ACTIONS_URL (or mirror actions/checkout into the local Gitea org) so
+#     `uses:` resolves. A self-hosted CI that silently fetches actions from github.com on every run
+#     has quietly reintroduced the dependency we self-hosted to remove — mirror it.
+
+name: ci
+
+on:
+  push:
+    paths:
+      - "mobile/**"
+      - "devops/ci/**"
+      - ".github/workflows/**"
+      - ".gitea/workflows/**"
+  pull_request:
+    paths:
+      - "mobile/**"
+      - "devops/ci/**"
+      - ".github/workflows/**"
+      - ".gitea/workflows/**"
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ================================================================================================
+  # FAST GATES — bash + coreutils only. ALL BLOCKING. The safety-invariant gates.
+  # ================================================================================================
+  fast-gates:
+    name: fast gates (blocking)
+    runs-on: [self-hosted, linux]
+    steps:
+      - uses: actions/checkout@v4
+      - name: gate self-tests
+        run: bash devops/ci/runner/run-stage.sh gate-selftests
+      - name: "safety invariant 1 — no map / no lat-lng / no bearing"
+        if: ${{ !cancelled() }}
+        run: bash devops/ci/runner/run-stage.sh gate-no-map-no-bearing
+      - name: "decision 43 / B11 — internal symbol escape"
+        if: ${{ !cancelled() }}
+        run: bash devops/ci/runner/run-stage.sh gate-internal-escape
+      - name: "decision 41 — THE LINE (Crypto.kt pinned surface)"
+        if: ${{ !cancelled() }}
+        run: bash devops/ci/runner/run-stage.sh gate-the-line
+
+  # ================================================================================================
+  # KNOWN-RED GATES — run, report loudly, do NOT block the ordinary path. BLOCKING on release.
+  # Reasoning lives in ONE place: the KNOWN-RED REGISTRY comment in devops/ci/runner/run-stage.sh.
+  # ================================================================================================
+  known-red-gates:
+    name: known-red gates (non-blocking here, BLOCKING on release)
+    runs-on: [self-hosted, linux]
+    steps:
+      - uses: actions/checkout@v4
+      - name: "decision 34 / B9 / B11 — 0xFDA9 must not ship (source scan)"
+        run: bash devops/ci/runner/run-stage.sh gate-release-uuid-source
+      - name: "battery contract (<4%/hr scanning, <1%/day idle) — no hardware rig exists"
+        if: ${{ !cancelled() }}
+        run: bash devops/ci/runner/run-stage.sh gate-battery
+
+  # ================================================================================================
+  # ANDROID BUILD + CONFORMANCE. ALL BLOCKING.
+  #
+  # HANDOFF-1, OPEN: the conformance step WILL FAIL on this Linux runner until qa-test makes
+  # devops/ci/gates/conformance_gate.sh invoke the Gradle wrapper OS-aware — it hardcodes
+  # `./gradlew.bat`, which does not execute on Linux. devops/ci/runner/run-stage.sh detects exactly
+  # that condition and prints the reason instead of a bare "no such file", and the detection stops
+  # matching by itself the moment the gate is fixed.
+  # It is left BLOCKING and not skipped on purpose: an unrun conformance gate and a passing one must
+  # never look the same in a CI log. This is the one stage that guards the moat.
+  # Until then the authoritative conformance run happens on the interim GitHub Windows runner
+  # (.github/workflows/ci.yml). No Mac is involved on either path — iOS is DEFERRED (B4).
+  # ================================================================================================
+  android:
+    name: android build + conformance (blocking)
+    runs-on: [self-hosted, linux, android]
+    steps:
+      - uses: actions/checkout@v4
+      - name: ":shared:testDebugUnitTest + :android:testDebugUnitTest"
+        run: bash devops/ci/runner/run-stage.sh build-unit-test
+      - name: ":android:lintDebug"
+        if: ${{ !cancelled() }}
+        run: bash devops/ci/runner/run-stage.sh build-lint
+      - name: ":android:assembleDebug"
+        if: ${{ !cancelled() }}
+        run: bash devops/ci/runner/run-stage.sh build-assemble-debug
+      - name: "conformance vectors (BLE codec — authoritative) [HANDOFF-1]"
+        if: ${{ !cancelled() }}
+        run: bash devops/ci/runner/run-stage.sh gate-conformance

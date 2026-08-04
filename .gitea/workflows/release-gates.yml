@@ -1,0 +1,89 @@
+# .gitea/workflows/release-gates.yml — RELEASE / TAG PATH, SELF-HOSTED. EVERYTHING BLOCKS.
+#
+# Owner: devops-tencent. Mirror of .github/workflows/release-gates.yml; the full reasoning for the
+# push-vs-release blocking split is written out there and in the KNOWN-RED REGISTRY comment in
+# devops/ci/runner/run-stage.sh. Not repeated here — one canonical explanation, referenced twice.
+#
+# DORMANT UNTIL B3 CLOSES (no Gitea instance; Tencent not provisioned).
+# EXPECTED TO FAIL WHEN IT DOES RUN: B9 (0xFDA9 not SIG-allocated), B11 (constant unguarded on the
+# release path), battery unmeasured. Radius cannot ship. This workflow says so mechanically.
+
+name: release-gates
+
+on:
+  push:
+    tags:
+      - "v*"
+    branches:
+      - "release/**"
+  workflow_dispatch:
+
+concurrency:
+  group: release-gates-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  # The one switch. Disables the known-red tolerance in devops/ci/runner/run-stage.sh.
+  RADIUS_CI_STRICT: "1"
+
+jobs:
+  fast-gates:
+    name: fast gates (strict)
+    runs-on: [self-hosted, linux]
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash devops/ci/runner/run-stage.sh gate-selftests
+      - if: ${{ !cancelled() }}
+        run: bash devops/ci/runner/run-stage.sh gate-no-map-no-bearing
+      - if: ${{ !cancelled() }}
+        run: bash devops/ci/runner/run-stage.sh gate-internal-escape
+      - if: ${{ !cancelled() }}
+        run: bash devops/ci/runner/run-stage.sh gate-the-line
+
+  battery-gate:
+    name: "battery gate (STRICT — expected RED, no hardware rig)"
+    runs-on: [self-hosted, linux]
+    steps:
+      - uses: actions/checkout@v4
+      # BATTERY_RESULTS_JSON deliberately unset. When the P1 hardware rig publishes results, wire the
+      # path here — schema and the source="hardware-rig" provenance rule are in battery_gate.sh.
+      - name: "<4%/hr scanning, <1%/day idle"
+        run: bash devops/ci/runner/run-stage.sh gate-battery
+
+  release-uuid-gate:
+    name: "0xFDA9 release gate (STRICT — expected RED, B9/B11)"
+    runs-on: [self-hosted, linux, android]
+    steps:
+      - uses: actions/checkout@v4
+      - name: "source scan (primary — R8 hides the constant from the artifact scan)"
+        run: bash devops/ci/runner/run-stage.sh gate-release-uuid-source
+      - name: ":android:assembleRelease"
+        if: ${{ !cancelled() }}
+        run: bash devops/ci/runner/run-stage.sh build-assemble-release
+      - name: "artifact scan (defence in depth)"
+        if: ${{ !cancelled() }}
+        run: bash devops/ci/runner/run-stage.sh gate-release-uuid-artifact
+
+  android:
+    name: android build + conformance (strict)
+    runs-on: [self-hosted, linux, android]
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash devops/ci/runner/run-stage.sh build-unit-test
+      - if: ${{ !cancelled() }}
+        run: bash devops/ci/runner/run-stage.sh build-lint
+      - if: ${{ !cancelled() }}
+        run: bash devops/ci/runner/run-stage.sh build-assemble-debug
+      - if: ${{ !cancelled() }}
+        run: bash devops/ci/runner/run-stage.sh gate-conformance # [HANDOFF-1] see .gitea/workflows/ci.yml
+
+  release-gate:
+    name: RELEASE GATE
+    runs-on: [self-hosted, linux]
+    needs: [fast-gates, battery-gate, release-uuid-gate, android]
+    steps:
+      - name: all release gates green
+        run: |
+          echo "RELEASE GATE PASSED — CI portion only."
+          echo "NOT covered by CI: a11y pass, security-privacy sign-off (ADR-008 M1-M7),"
+          echo "runbook current, rollback tested, restore drill logged."

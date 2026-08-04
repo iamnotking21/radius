@@ -37,7 +37,11 @@ Calling: WebRTC P2P · coturn (STUN/TURN) · Opus + H.264 · LiveKit SFU ONLY if
 Data: Postgres16 + PostGIS + pgvector · Valkey · NATS JetStream · SeaweedFS
 Web: Next15 marketing · React+Vite admin
 Infra: OpenTofu · Ansible · Docker · Compose→K3s→TKE · Caddy · SOPS→OpenBao
-CI: Gitea Actions self-host. Obs: Prometheus Grafana Loki Tempo GlitchTip
+CI: Gitea Actions self-host = DESTINATION. GitHub Actions = INTERIM until B3 (ADR-009).
+  both wired, ZERO logic in either — every step calls devops/ci/runner/run-stage.sh.
+  HARD LINE: the day CI needs a signing key, registry credential, or prod access, it moves
+  to Gitea FIRST. that is when a CI provider starts holding something that matters.
+Obs: Prometheus Grafana Loki Tempo GlitchTip
 Crypto: vodozemac (Apache2). NOT libsignal (AGPL = legal risk).
 Cloud: Tencent CVM, region SINGAPORE. NEVER mainland (ICP filing trap).
 
@@ -105,6 +109,10 @@ website/   → web-next
 devops/    → devops-tencent   EXCEPT devops/ci/ TEST stages → qa-test
   (devops-tencent owns the runner + infra/deploy stages; qa-test owns the test + gate stages)
   devops/tofu/coturn/ → calling-webrtc (only module carve-out)
+.github/ .gitea/ → devops-tencent (workflow DISCOVERY only. NO logic may live in these files —
+  every step calls devops/ci/runner/run-stage.sh. ADR-009)
+devops/ci/runner/ → devops-tencent (stage table + blocking split = RUNNER concerns, not checks.
+  keeps devops out of qa-test's gate scripts when a runner concern changes)
 analytics/ → data-ml
 **/tests/  → qa-test (source dirs stay with their platform agent)
 docs/adr/  → orchestrator ONLY (append only). others PROPOSE, never write.

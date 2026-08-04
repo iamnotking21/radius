@@ -1,0 +1,137 @@
+# .github/workflows/release-gates.yml — RELEASE / TAG PATH. EVERYTHING BLOCKS.
+#
+# Owner: devops-tencent. Mirrored verbatim by .gitea/workflows/release-gates.yml. All stage commands
+# come from devops/ci/runner/run-stage.sh; all check logic is qa-test's in devops/ci/gates/.
+#
+# ------------------------------------------------------------------------------------------------
+# THE SPLIT, STATED LOUDLY BECAUSE IT IS THE WHOLE DESIGN
+#
+#   ci.yml (push/PR)          two gates are KNOWN-RED and do not block: the 0xFDA9 release gate and
+#                             the battery gate. They still run, and the reason they are red is
+#                             printed into the run summary on every single build.
+#   release-gates.yml (HERE)  RADIUS_CI_STRICT=1. The known-red tolerance does not exist. Every gate
+#                             blocks, including those two, plus the release-APK artifact scan that
+#                             the push path does not build for.
+#
+#   WHY: a gate that is red on every build for months is a gate people learn to ignore, and it stops
+#   meaning anything on the day it finally matters. A gate that is red only when you try to ship is
+#   read carefully, because it is standing between you and shipping. Same gate, same script, same
+#   verdict — different consequence, chosen to match when the verdict is actionable.
+#
+#   THIS WORKFLOW IS EXPECTED TO FAIL TODAY. That is not a defect and must not be "fixed":
+#     * B9  — 0xFDA9 is provisional, not SIG-allocated. Bluetooth SIG Adopter membership is
+#             sequenced behind legal-entity formation. Weeks of lead time, nobody assigned.
+#     * B11 — the constant is currently unguarded on the release path (Advertisement.kt).
+#     * battery — <4%/hr scanning and <1%/day idle have never been measured on any device.
+#   RADIUS CANNOT SHIP. This workflow is the mechanical statement of that fact. If you find yourself
+#   wanting to make it green, the thing to change is the world, not this file.
+# ------------------------------------------------------------------------------------------------
+
+name: release-gates
+
+on:
+  push:
+    tags:
+      - "v*"
+    branches:
+      - "release/**"
+  workflow_dispatch:
+
+concurrency:
+  group: release-gates-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  # The one switch. Disables the known-red tolerance in devops/ci/runner/run-stage.sh.
+  RADIUS_CI_STRICT: "1"
+
+jobs:
+  fast-gates:
+    name: fast gates (strict)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash devops/ci/runner/run-stage.sh gate-selftests
+      - if: ${{ !cancelled() }}
+        run: bash devops/ci/runner/run-stage.sh gate-no-map-no-bearing
+      - if: ${{ !cancelled() }}
+        run: bash devops/ci/runner/run-stage.sh gate-internal-escape
+      - if: ${{ !cancelled() }}
+        run: bash devops/ci/runner/run-stage.sh gate-the-line
+
+  battery-gate:
+    name: "battery gate (STRICT — expected RED, no hardware rig)"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # BATTERY_RESULTS_JSON is deliberately unset. When the hardware rig exists it will publish a
+      # results file and this is where it gets wired — see battery_gate.sh's header for the schema
+      # and the source="hardware-rig" provenance rule that rejects simulator output by construction.
+      - name: "<4%/hr scanning, <1%/day idle"
+        run: bash devops/ci/runner/run-stage.sh gate-battery
+
+  # 0xFDA9 — both phases. Source scan is the LOAD-BEARING one: R8 decomposes the 16-bit constant
+  # into two single-byte loads, so a clean artifact scan proves much less than it looks like it does
+  # (full writeup in devops/ci/gates/release_uuid_gate.sh). The artifact scan runs anyway as
+  # defence-in-depth against string-literal leaks, which is the class it genuinely does catch.
+  release-uuid-gate:
+    name: "0xFDA9 release gate (STRICT — expected RED, B9/B11)"
+    runs-on: windows-latest # see ci.yml `android` job: HANDOFF-1, gradlew.bat
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: gradle
+      - name: "source scan (primary)"
+        shell: bash
+        run: bash devops/ci/runner/run-stage.sh gate-release-uuid-source
+      - name: ":android:assembleRelease"
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: bash devops/ci/runner/run-stage.sh build-assemble-release
+      - name: "artifact scan (defence in depth)"
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: bash devops/ci/runner/run-stage.sh gate-release-uuid-artifact
+
+  android:
+    name: android build + conformance (strict)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: gradle
+      - shell: bash
+        run: bash devops/ci/runner/run-stage.sh build-unit-test
+      - if: ${{ !cancelled() }}
+        shell: bash
+        run: bash devops/ci/runner/run-stage.sh build-lint
+      - if: ${{ !cancelled() }}
+        shell: bash
+        run: bash devops/ci/runner/run-stage.sh build-assemble-debug
+      - if: ${{ !cancelled() }}
+        shell: bash
+        run: bash devops/ci/runner/run-stage.sh gate-conformance
+
+  # Aggregate. Exists so "is this shippable?" is ONE answer, not five tabs.
+  # What it does NOT cover, and never will: the non-CI half of the release checklist — a11y pass,
+  # security-privacy sign-off (incl. ADR-008 M1-M7), runbook current, rollback tested, restore drill
+  # logged. A green CI is a necessary condition for shipping, never a sufficient one.
+  release-gate:
+    name: RELEASE GATE
+    runs-on: ubuntu-latest
+    needs: [fast-gates, battery-gate, release-uuid-gate, android]
+    steps:
+      - name: all release gates green
+        run: |
+          echo "RELEASE GATE PASSED — CI portion only."
+          echo "NOT covered by CI: a11y pass, security-privacy sign-off (ADR-008 M1-M7),"
+          echo "runbook current, rollback tested, restore drill logged."

@@ -7,7 +7,8 @@ phase: 0 — BLE feasibility spike
 week: 1
 blocking-everything: spike go/no-go memo not written. ZERO hardware measurement exists.
 mobile arch: KOTLIN MULTIPLATFORM shared core + native UI (ADR-007)
-repo: git init'd, nothing committed. KMP tree + iOS tree + BLE spec all scaffolded, ALL UNVERIFIED.
+repo: pushed to github.com/iamnotking21/radius (main @ 932c72f, 160 files).
+  Android side BUILDS AND TESTS GREEN. iOS scaffolded only, never compiled (B4).
 infra: not provisioned
 contracts: proto v0 NOT locked · shared API v0 GATED · BLE spec v0 WRITTEN, 0/16 cells measured
 hires: 0/2 BLE specialists
@@ -251,3 +252,35 @@ DEFERRED, not cancelled: all iOS work · Mac procurement · Carrier B validation
   OWED WHEN A LOGOUT/DELETE PATH EXISTS: KeyRing.destroyAllKeyMaterial() (decision 55, ADR-008
   M5). No auth path exists to call it from. Recorded in the EpochBoundaryListener KDoc, next to
   its twin, because that is where someone building that path will be looking.
+2026-08-04 devops-tencent · CI GATES NOW ACTUALLY RUN. Six gates existed and passed their own
+  self-tests; NONE executed on push, because devops/ci/workflows/android.yml sits in a directory no
+  CI provider discovers. Decorative gates are worse than none — they invite "CI is green" from a
+  founder update. FIXED, dual-target: .github/workflows/{ci,release-gates}.yml (interim, GitHub is
+  where the code is) + .gitea/workflows/ same two (destination, dormant until B3). NEITHER FILE
+  CONTAINS A COMMAND — both call devops/ci/runner/run-stage.sh <stage>, one stage table, so the
+  providers cannot drift; check logic stays in qa-test's devops/ci/gates/, untouched, never
+  reimplemented.
+  ADR-003 TENSION, resolved not ignored: the ADR objects to lock-in + a vendor holding user data.
+  A runner executing our own bash on our own source holds neither. No proprietary GitHub surface,
+  no secret, `permissions: contents:read`, release APK is unsigned. THE LINE: the day CI needs a
+  signing key / registry credential / prod access it moves to Gitea FIRST. Orchestrator: ADR
+  proposed in devops/ci/runner/README.md §2, plus root CLAUDE.md REPO MAP has no owner for
+  .github/ or .gitea/ (claimed as runner territory, needs a line to be real).
+  BLOCKING SPLIT (the design, not a detail): 0xFDA9 gate + battery gate are RED BY DESIGN and are
+  NON-BLOCKING on push/PR, BLOCKING on tag/release/**. A gate red on every build for months is a
+  gate people learn to ignore, and it stops meaning anything the day it matters. They are NOT
+  silenced: run-stage.sh ASSERTS the expected state (xfail) — still-failing prints the full reason
+  into the run summary every build and passes; STARTED PASSING fails the stage and demands the
+  tolerance be deleted, because a tolerance outliving its cause silently absorbs the next real
+  violation. Cannot mask a broken gate script: gate-selftests is blocking on every path.
+  release-gates.yml IS EXPECTED TO FAIL TODAY (B9/B11/battery). That is it working.
+  VERIFIED LOCALLY, all 12 stages, real commands not assertions: 4 fast gates exit 0 · known-red
+  exit 0 on push and exit 1 under RADIUS_CI_STRICT=1 · XPASS branch exit 1 · unit-test/lint/
+  assembleDebug/assembleRelease green · conformance gate PASS, 116 vectors live · artifact scan
+  PASS on android-release-unsigned.apk · Android-SDK preflight fails in 1s with the fix in the
+  message · 4 YAML files parse. UNPROVEN UNTIL A REAL RUN: runner images, actions/* resolution,
+  cache, path filters, job-summary rendering. No CI run has ever happened.
+  RAISED B12 (HANDOFF-1) — conformance_gate.sh hardcodes ./gradlew.bat, so the GitHub android job
+  is forced onto windows-latest (2x minutes) and the Linux/Gitea conformance stage cannot run.
+  qa-test one-liner; run-stage.sh detects it and prints the reason instead of "no such file".
+  COST: $0/mo. infra still not provisioned (B3).
