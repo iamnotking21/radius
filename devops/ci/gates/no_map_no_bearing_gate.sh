@@ -11,9 +11,48 @@
 # and the whole point of a mechanical gate is that vigilance is exactly the thing that fails under
 # deadline pressure. "Mechanical enforcement, not reviewer vigilance" — this is that mechanism.
 #
-# SCOPE: mobile/ source code ONLY (.kt, .kts, .swift). Applies to ALL of mobile/, including test
-# source, because invariant 1 says "ANYWHERE" and does not carve out a debug/test exception the way
-# decision 34 does for the provisional UUID. Excludes:
+# SCOPE, WIDENED 2026-08-05 (CLAIMS_REGISTER.md gap G3): mobile/ (.kt, .kts, .swift) — UNCHANGED
+# behaviour, see below — PLUS backend/ (.go, .sql, .proto) and website/ (.ts, .tsx, .js, .jsx).
+#
+# WHY THE WIDENING, AND WHY IT WAS SAFE TO DO TODAY: this gate previously set SCAN_ROOT to
+# `mobile/` and matched only `.kt`/`.kts`/`.swift`. It could not see `backend/`, `website/`, or any
+# `.go`/`.sql`/`.proto` file — which means it checked the one directory where invariant 1 was never
+# actually at risk (mobile displays a band, never a coordinate, by construction — see PATTERNS
+# below) and NONE of the directories where a coordinate could actually get durably stored: root
+# CLAUDE.md SAFETY INVARIANT 1 is "NO map. NO bearing. NO lat/lng SERVER-SIDE", and
+# `backend/CLAUDE.md` states the same rule in backend-owned language: "NEVER store lat/lng. city =
+# geohash5. encounters store BAND only." `backend/` contains no source yet (CLAIMS_REGISTER row B1:
+# "First `.sql` or `.proto` lands" is the falsification trigger) and `website/` contains none either
+# — so widening costs nothing today and is in place before the first line lands, rather than being
+# added retroactively after a coordinate column has already shipped.
+#
+# THE MOBILE BEHAVIOUR ITSELF IS UNCHANGED: the original `find` call against `mobile/` with its
+# original extension list and exclusions runs exactly as it did before. The new roots are additional
+# `find` passes through the SAME detection/exclusion pipeline (`strip_comments_and_idiom` +
+# `PATTERNS`), not a parallel implementation, so a bugfix to either applies everywhere at once — the
+# same reasoning `qa_strip_comments`'s header gives for being centralised in lib/common.sh.
+#
+# GEOHASH IS ALLOWED. LAT/LNG IS NOT. THAT DISTINCTION IS LOAD-BEARING FOR THE NEW ROOTS, NOT AN
+# AFTERTHOUGHT: `backend/CLAUDE.md` requires `geohash5` to exist in backend source ("city =
+# geohash5"), and PostGIS/geohash column and function names routinely contain the substrings this
+# gate would otherwise be tempted to ban wholesale (`geo`, `geography`, `geom`). PATTERNS below does
+# NOT add any bare `geo`/`coordinate`/`location`-shaped term for exactly that reason — every pattern
+# added for the new roots is the SAME identifier list already used for mobile (`latitude`,
+# `longitude`, `LatLng`, `lat_lng`, `bearing`, `altitude`, plus the map/location-API patterns, which
+# will simply never match Go/SQL/TS and cost nothing there). `geohash5`, `geohash_5`, `ST_GeoHash`,
+# `city_geohash` etc. do not contain `latitude`/`longitude`/`lat_lng`/`bearing`/`altitude` as
+# substrings and are UNAFFECTED. Regression-pinned in the self-test — see
+# `test_no_map_no_bearing_gate.sh` "geohash5 in SQL is NOT flagged" / "Go geohash column is NOT
+# flagged" alongside "lat/lng column in SQL / Go IS flagged".
+#
+# SQL COMMENT SYNTAX: `.sql` files use `--` line comments, not `//` — `qa_strip_comments` (tuned to
+# Kotlin/Swift/Go, which all share C-family `//` and `/* */`) does not strip those, so `.sql` files
+# use the dedicated `qa_strip_sql_comments` (lib/common.sh) instead, same contract, same reason
+# comments are stripped for the mobile scan: a PostGIS column comment or `-- no lat/lng here, see
+# invariant 1` must not self-trigger the gate that documents the rule it enforces. `.go` and
+# `.proto` share Kotlin/Swift's `//` and `/* */` syntax, so they reuse `qa_strip_comments` unchanged.
+#
+# EXCLUDES (all roots):
 #   - this gate's own fixtures under devops/ci/tests/ and **/tests/ (qa-test's, may legitimately
 #     reference the banned symbol names as strings when testing the gate itself)
 #   - documentation (*.md, *.json) — mobile/protocol/SPEC.md and KEY_SCHEDULE.md are REQUIRED to
@@ -36,9 +75,17 @@
 #     do not false-positive.
 #
 # USAGE:
-#   devops/ci/gates/no_map_no_bearing_gate.sh [--source-dir DIR]
-#   --source-dir DIR   Override the scan root (defaults to <repo>/mobile). Used by the self-test
-#                       harness against synthetic fixtures.
+#   devops/ci/gates/no_map_no_bearing_gate.sh [--source-dir DIR] [--backend-dir DIR] [--website-dir DIR]
+#   --source-dir DIR    Override the MOBILE scan root (defaults to <repo>/mobile). Original flag,
+#                        UNCHANGED meaning — existing self-tests and any external caller keep working.
+#   --backend-dir DIR   Override the BACKEND scan root (defaults to <repo>/backend). Self-test only.
+#   --website-dir DIR   Override the WEBSITE scan root (defaults to <repo>/website). Self-test only.
+#
+# A root that does not exist is SKIPPED, not a hard failure — unlike the original mobile-only
+# behaviour (mobile/ is required to exist; a missing repo checkout is a real error). `backend/` and
+# `website/` legitimately not existing yet is exactly today's live state (CLAIMS_REGISTER.md: "First
+# `.sql` or `.proto` lands" / row B1 has not happened), and a gate that hard-failed on an owner's
+# empty directory would train people to ignore it long before there is anything to check.
 #
 # EXIT CODE: 0 if clean. Non-zero, with every offending file:line printed, otherwise.
 
@@ -49,10 +96,14 @@ source "$SCRIPT_DIR/lib/common.sh"
 
 REPO_ROOT="$(qa_repo_root)"
 SCAN_ROOT="$REPO_ROOT/mobile"
+BACKEND_ROOT="$REPO_ROOT/backend"
+WEBSITE_ROOT="$REPO_ROOT/website"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --source-dir) SCAN_ROOT="$2"; shift 2 ;;
+    --backend-dir) BACKEND_ROOT="$2"; shift 2 ;;
+    --website-dir) WEBSITE_ROOT="$2"; shift 2 ;;
     *) qa_hardfail "unknown argument: $1" ;;
   esac
 done
@@ -84,6 +135,21 @@ done
 #      `/** ... * ... */` style, not a full tokenizer — and (b) "load-bearing" is neutralised
 #      separately as a targeted idiom exception, because it can appear on a code-adjacent comment
 #      line the heuristic does not fully strip.
+#   3. CASE-INSENSITIVE AS OF THE G3 WIDENING, found the same way #1 and #2 were — by running the
+#      widened self-test against a realistic fixture, not by inspection. The original bare-identifier
+#      patterns (`\blatitude\b` etc.) were matched CASE-SENSITIVELY, which is invisible in Kotlin/
+#      Swift because both languages' naming convention puts a property named after these words in
+#      lowerCamelCase (`val latitude: Double`) — but Go's convention for an EXPORTED struct field is
+#      UpperCamelCase (`Latitude float64`), and a case-sensitive `\blatitude\b` never matches
+#      `Latitude`. A first draft of the widened gate shipped exactly that gap; the self-test fixture
+#      `test_no_map_no_bearing_gate.sh` "Go struct with Latitude/Longitude fields IS flagged" caught
+#      it failing to flag before this fix landed. Verified safe to flip globally (not just for the
+#      new roots) by re-running the full pattern set, case-insensitively, with comments stripped,
+#      against the live `mobile/` tree first: zero matches — every case-varying hit that exists today
+#      is inside a comment, which is stripped before matching either way (see the mobile CALIBRATED
+#      note #2 above), so mobile's effective behaviour is unchanged even though the flag is now on
+#      unconditionally, and this class of miss can no longer resurface in ANY of the four languages
+#      this gate reads.
 declare -a PATTERNS=(
   # -- map frameworks --
   '\bMKMapView\b' '\bMKMapItem\b' '\bMKCoordinateRegion\b' '\bMKAnnotation\b'
@@ -116,19 +182,53 @@ strip_comments_and_idiom() {
   qa_strip_comments "$1" | sed -E -e 's#[Ll]oad-bearing#load_bearing#g'
 }
 
+# SQL variant, added for the G3 widening — `.sql` uses `--` line comments, not `//`
+# (`qa_strip_sql_comments`, lib/common.sh), everything else about the idiom neutralisation is
+# identical.
+strip_sql_comments_and_idiom() {
+  qa_strip_sql_comments "$1" | sed -E -e 's#[Ll]oad-bearing#load_bearing#g'
+}
+
 found=0
-while IFS= read -r -d '' file; do
-  case "$file" in
-    */tests/*|*Test.kt|*Test.swift|*/build/*) continue ;;
-  esac
-  if strip_comments_and_idiom "$file" | grep -nE "$JOINED" >/tmp/qa_map_hits.$$ 2>/dev/null; then
-    found=1
-    rel="${file#"$REPO_ROOT"/}"
-    qa_fail "banned map/location/bearing API in $rel:"
-    sed 's/^/    /' /tmp/qa_map_hits.$$ >&2
-  fi
-  rm -f /tmp/qa_map_hits.$$
-done < <(find "$SCAN_ROOT" -type f \( -name '*.kt' -o -name '*.kts' -o -name '*.swift' \) -print0)
+
+# scan_root ROOT STRIP_FN NAME_EXPR...  — one root, one comment-stripper, one or more `find -name`
+# expressions. Shared by all three roots so a bugfix applies everywhere at once (see header).
+scan_root() {
+  local root="$1" strip_fn="$2"
+  shift 2
+  local -a name_exprs=("$@")
+  local -a find_args=()
+  local first=1
+  for expr in "${name_exprs[@]}"; do
+    if [[ $first -eq 1 ]]; then first=0; else find_args+=(-o); fi
+    find_args+=(-name "$expr")
+  done
+
+  while IFS= read -r -d '' file; do
+    case "$file" in
+      */tests/*|*Test.kt|*Test.swift|*/build/*) continue ;;
+    esac
+    if "$strip_fn" "$file" | grep -inE "$JOINED" >/tmp/qa_map_hits.$$ 2>/dev/null; then
+      found=1
+      rel="${file#"$REPO_ROOT"/}"
+      qa_fail "banned map/location/bearing API in $rel:"
+      sed 's/^/    /' /tmp/qa_map_hits.$$ >&2
+    fi
+    rm -f /tmp/qa_map_hits.$$
+  done < <(find "$root" -type f \( "${find_args[@]}" \) -print0)
+}
+
+# -- mobile: UNCHANGED extensions, UNCHANGED stripper, UNCHANGED exclusions (see header) -----------
+scan_root "$SCAN_ROOT" strip_comments_and_idiom '*.kt' '*.kts' '*.swift'
+
+# -- backend: NEW. .go/.proto share Kotlin/Swift comment syntax; .sql needs the SQL-aware stripper -
+[[ -d "$BACKEND_ROOT" ]] && {
+  scan_root "$BACKEND_ROOT" strip_comments_and_idiom '*.go' '*.proto'
+  scan_root "$BACKEND_ROOT" strip_sql_comments_and_idiom '*.sql'
+}
+
+# -- website: NEW. TypeScript/JavaScript share Kotlin/Swift comment syntax -------------------------
+[[ -d "$WEBSITE_ROOT" ]] && scan_root "$WEBSITE_ROOT" strip_comments_and_idiom '*.ts' '*.tsx' '*.js' '*.jsx'
 
 if [[ $found -eq 1 ]]; then
   qa_fail "NO-MAP-NO-BEARING GATE: FAILED. Safety invariant 1 is violated by the above."
@@ -138,5 +238,5 @@ if [[ $found -eq 1 ]]; then
   exit 1
 fi
 
-qa_pass "NO-MAP-NO-BEARING GATE: PASSED. No map/location/bearing API in mobile source."
+qa_pass "NO-MAP-NO-BEARING GATE: PASSED. No map/location/bearing API in mobile, backend or website source."
 exit 0

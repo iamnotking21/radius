@@ -51,11 +51,19 @@ Every row is **DESIGN**. `backend/` contains one file — a memory document. The
 
 | Gap | Missing | Consequence |
 |---|---|---|
-| **G1** | No RSSI egress gate | Decision 28 is load-bearing and enforced by one redaction, one test, and memory. Proposed: `rssi_egress_gate.sh`, blocking on `src/main` + `commonMain`, flagging `rssiDbm` reaching any log or string template, and any `rssi` field in a serializer, RPC message, or `.sq` file |
-| **G2** | No merged-manifest permission gate | Decision 50 said audits must read the merged manifest; nobody wrote the check. A transitive dependency can re-add `INTERNET` and nothing goes red. Proposed: `permission_gate.sh` with an explicit allowlist, failing with a message naming **the privacy-policy paragraph it invalidates** |
-| **G3** | Invariant-1 gate scans `mobile/` only | Cannot see `backend/`, `website/`, `.go`, `.sql`, `.proto`. It checks the one directory where the claim was never at risk |
-| **G4** | No crash-report scrubbing policy | Crash reports are the canonical RSSI/ephemeral-ID egress path. Needs a written rule before any reporter is integrated |
-| **G5** | No relay-only calling option | ICE exposes each party's IP to the other. On a dating app between people who met via proximity, that is a known stalking vector. Small to build: a relay policy plus a signalling flag. **Must be free** |
+| **G1** | ~~No RSSI egress gate~~ **CLOSED 2026-08-05** | `rssi_egress_gate.sh`, 13 assertions, clean against the live repo. Keys on `rssi`, deliberately **not** `dbm` — `txPowerCalDbm` is a real deliberately-transmitted protocol field (invariant 4's txpower byte) and would false-positive forever. Catches: log/print calls, string interpolation *outside* a log call, `.sq` files, and any file carrying `@Serializable`/`@ProtoNumber`. `src/debug` excluded by design (the spike harness writes RSSI locally, with no network permission). **Wiring owed** — see below. |
+| **G2** | ~~No merged-manifest permission gate~~ **CLOSED 2026-08-05** | `permission_gate.sh`, 10 assertions, reads real AGP output for both variants against a 9-item allowlist. `INTERNET`'s failure message names **Privacy §3b bound 1 and register row A4** by name, so whoever adds it learns what they invalidated. Found a real extra entry by reading the live manifest instead of trusting the requested list: AndroidX injects `<applicationId>.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION` — signature-protected, self-scoped, zero capability — now allowlisted by pattern with the reasoning inline. **Wiring owed** — see below. |
+| **G3** | ~~Invariant-1 gate scans `mobile/` only~~ **CLOSED 2026-08-05** | Widened to `backend/` (`.go`/`.sql`/`.proto`) and `website/` (`.ts`/`.tsx`/`.js`/`.jsx`), same pattern list, `geohash5` still allowed and coordinates still banned. 17 assertions; the 6 pre-existing mobile ones pass unmodified. Needed **no** runner change — the stage already calls the script with default args. Caught in testing: the bare-identifier patterns were case-sensitive, which is invisible in Kotlin/Swift lowerCamelCase but misses Go's idiomatic exported `Latitude float64` entirely. |
+
+### Wiring still owed (devops-tencent)
+
+`gate-rssi-egress` slots into `fast-gates` with no complications.
+
+`gate-permission` has a structural problem worth stating: it needs **both** merged manifests in the **same** job, and today `ci.yml` only runs `assembleDebug`, while `assembleRelease` happens in a separate job on a separate runner where those manifests are not visible. The cheap fix is AGP's manifest-merge-only tasks (`processDebugManifestForPackage` / `processReleaseManifestForPackage`) — no compile, no R8, no signing, just the step that produced the files — rather than a full release build on every push.
+
+**Until wired, G1 and G2 exist but are not enforced.** That distinction is the reason this register exists.
+| **G4** | ~~No crash-report scrubbing policy~~ **CLOSED 2026-08-05** | Written as `docs/TELEMETRY_SCRUBBING_POLICY.md`. Binding before any reporter, analytics SDK, or remote log sink is integrated. R6 is the non-obvious one: self-hosting GlitchTip does **not** make collection safe — a reporter capturing ephemeral IDs would build, by accident, exactly the corpus decision 36 forbids, and our own server holding it is worse than a third party's, not better. Enforcement still owed: R8 requires the G1 gate to be extended to the reporter's API surface at integration time. |
+| **G5** | No relay-only calling option | ICE exposes each party's IP to the other. On a dating app between people who met via proximity, that is a known stalking vector. Small to build: a relay policy plus a signalling flag. **Must be free.** **DEFERRED to P2 with calling** — it cannot be built before the calling service exists, but it must not be forgotten when it does, so it is listed as a calling-launch requirement rather than an enhancement. |
 
 ---
 

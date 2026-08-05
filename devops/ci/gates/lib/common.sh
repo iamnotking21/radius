@@ -93,3 +93,19 @@ qa_gradle_wrapper() {
     *)                    echo "./gradlew" ;;
   esac
 }
+
+# ---- SQL comment stripping ----------------------------------------------------------------------
+# qa_strip_sql_comments <file>  — same contract as qa_strip_comments (blank, never delete, so line
+# numbers stay aligned), but for `.sql`/`.sq` syntax: `--` line comments instead of `//`, plus the
+# same `/* ... */` block-comment heuristic (SQL and C-family block comments are identical syntax).
+# Added for G3 (widened invariant-1 scan, `.sql` under backend/) and G1 (RSSI egress gate,
+# SQLDelight `.sq` files) — both need "a word in a SQL comment explaining a rule is not the rule
+# being broken" for exactly the reason `qa_strip_comments` exists for Kotlin/Swift KDoc.
+qa_strip_sql_comments() {
+  sed -E \
+    -e 's#--.*$##' \
+    -e 's#^[[:space:]]*\*.*$##' \
+    -e 's#^[[:space:]]*/\*\*?.*\*/[[:space:]]*$##' \
+    -e 's#^[[:space:]]*/\*\*?.*$##' \
+    -- "$1"
+}
