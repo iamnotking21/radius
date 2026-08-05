@@ -112,6 +112,43 @@ radius/
 
 ## 4. THE STACK
 
+> ### ⚠ SECTIONS 4.1 AND 4.2 ARE SUPERSEDED IN PART — read this first
+>
+> This document was written before Phase 0 started. Three architecture decisions have landed
+> since, and **§4.1/§4.2 below still describe the pre-ADR-007 world.** Corrected here rather
+> than rewritten in place, so the original reasoning stays legible — several of its arguments
+> survived the change and are still the best statement of why.
+>
+> **[ADR-007](adr/ADR-007-kotlin-multiplatform-shared-core.md) — mobile is Kotlin Multiplatform**,
+> shared core with native UI. Supersedes ADR-001 in part.
+> - **GRDB and Room are both dropped.** A shared module cannot own two platform databases.
+>   **SQLDelight** replaces them — compile-checked raw SQL, the mobile twin of `sqlc`, consistent
+>   with the project-wide no-ORM rule. SQLCipher is retained on both sides.
+> - **Connect-Swift and Connect-Kotlin are both dropped** for the shared client. `connect-kotlin`
+>   is JVM/Android-only (OkHttp-based) and does not build for Kotlin/Native. Provisional
+>   replacement is **Wire + Ktor**.
+> - What survives unchanged: native UI on both platforms, Compose Multiplatform explicitly
+>   rejected for iOS, `android.bluetooth.le` direct with no Nordic wrapper, and §4.1's argument
+>   that BLE cannot be meaningfully abstracted — that argument is load-bearing *in* ADR-007.
+> - **KMP does not reduce the BLE work.** The radio is still written twice behind
+>   `expect`/`actual`. Anyone planning from §4.1/§4.2 should not assume otherwise.
+> - **A Mac becomes mandatory infrastructure.** Kotlin/Native iOS targets compile only on macOS.
+>
+> **[ADR-008](adr/ADR-008-account-key-server-issued.md) — `account_key` is server-issued**,
+> confirming §6.2. The consequence §6.2 does not state: **the operator can derive every
+> ephemeral ID a user will ever broadcast, retroactively.** Third-party observers learn nothing
+> — invariants 4 and 5 are untouched — but *we* entered the threat model, and seven mitigations
+> (M1-M7) are release conditions rather than hardening. The privacy policy is constrained by it.
+>
+> **[ADR-009](adr/ADR-009-interim-github-actions-ci.md) — GitHub Actions is interim CI**, Gitea
+> remains the destination. Deviation from §10's self-hosting stance, deliberately reversible,
+> with a hard line: the day CI needs a signing key, a registry credential, or prod access, it
+> moves to Gitea first.
+>
+> **Current state, so the phasing below reads correctly:** Phase 0 is code-complete and
+> unmeasured. No radio has run. `docs/PHASE0_GO_NO_GO.md` holds thresholds committed before any
+> data existed; its verdict section reads NOT YET REACHED.
+
 ### 4.1 Mobile — iOS
 
 | Layer | Choice | Why |
