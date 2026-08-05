@@ -22,6 +22,12 @@ import kotlin.test.assertTrue
  * The [BleRadio] wiring itself cannot be tested here — neither `actual` instantiates without a
  * platform and Robolectric is deliberately absent from this module. What IS testable, and is the
  * part most likely to be wrong, is the behavioural contract these tests pin below.
+ *
+ * THE ONE PIECE OF THAT WIRING THAT *IS* NOW TESTABLE is the ticker predicate: it stopped being a
+ * boolean expression buried in two `actual` classes and became [EpochTickerPolicy], a pure function
+ * of three booleans in `commonMain`. See [EpochTickerPolicyTest] — that disclaimer above used to
+ * cover a genuine gap, and the fix for the gap was to move the decision somewhere a test can reach
+ * it rather than to write a better disclaimer.
  */
 class EpochBoundaryPruneTest {
 

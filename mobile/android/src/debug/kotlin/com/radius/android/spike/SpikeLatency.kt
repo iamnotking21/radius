@@ -315,11 +315,68 @@ internal data class SpikeClockReference(
  *
  * Holds NO signal-strength value and no band. Latency is a time question; mixing a distance proxy
  * into it would put an `rssi`-shaped field in a third file for no analytical gain.
+ *
+ * NOT THREAD-SAFE. `SpikeController` calls every method under its own lock.
+ *
+ * ================================================================================================
+ * THE MISS COUNTER, AND WHY IT IS DRIVEN BY A CLOCK RATHER THAN BY PACKETS
+ * ================================================================================================
+ *
+ * [missedCycles] is the counter that lets the file header say a p50 is not hiding a 40 % failure
+ * rate. For it to mean that, it has to be able to count the case where NOTHING ARRIVED — and the
+ * first implementation could not, for two independent reasons, both of which failed in the
+ * flattering direction:
+ *
+ *  1. **It advanced the cycle on a sighting.** So a cycle in which no peer said anything never
+ *     ended, and no miss was ever attributed to it. If the peer handset ran out of battery at
+ *     minute 10 of 90, the counter froze at minute 10 and the p50 over those ten good minutes read
+ *     clean for the whole run. The one thing the counter existed to catch was the one thing it
+ *     structurally could not see. [advanceTo] is now called from a timer in `SpikeController`, so
+ *     the cycle ends because time passed, which is the only thing that actually ends a cycle.
+ *
+ *  2. **"Expected" was a monotone high-water mark.** `lastCycleExpectedPeers = maxOf(previous,
+ *     seenThisCycle.size)` never came down, so a peer that legitimately walked away was counted
+ *     missing in every remaining cycle of the run, forever. Ten minutes of a real peer leaving
+ *     would manufacture eighty misses out of one departure. The expected set is now EXPLICIT — a
+ *     map of peer key to consecutive misses — and a peer that misses
+ *     [SpikeTiming.LATENCY_PEER_DEPARTURE_MISSES] cycles in a row is recorded as DEPARTED once and
+ *     removed. Its misses up to that point are real misses and stay counted; what stops is the
+ *     invention of new ones.
+ *
+ * A departure and a run of misses are different findings and both are in the file. Neither is
+ * inferred from the other, and neither is inferred from a percentile.
+ *
+ * **Cycles during which the process was not running at all are NOT misses.** If Doze or an OEM
+ * killer suspends us for twenty minutes, we did not fail to hear the peer — we were not listening.
+ * Those cycles land in [unaccountedCycles], which is a Phase 0 finding of its own and is a
+ * different one from "the radio missed a peer that was transmitting".
  */
-internal class LatencyTracker {
+internal class LatencyTracker(
+    /**
+     * How many cycles' seen-sets stay open. Two, so that a sighting delivered slightly out of order
+     * — a batched scan result, or the [LatencyCycle.attributedCycleIndex] skew window pulling an
+     * arrival back into the previous cycle — still dedups against the right cycle rather than
+     * polluting the current one.
+     *
+     * **CONSEQUENCE: MISS ACCOUNTING LAGS BY ONE CYCLE.** A cycle is not accounted when it ends; it
+     * is accounted when it falls out of this window, one cycle later. That is the price of not
+     * counting a miss against a peer whose packet was merely late — and the trade is deliberate,
+     * because a wrongly-counted miss is a false failure report and a late-counted miss is only
+     * late. [closeElapsedCycles] settles the outstanding ones at the end of a run so the lag never
+     * costs the last cycles of a capture.
+     */
+    private val retainedCycles: Int = 2,
+    private val departureMisses: Int = SpikeTiming.LATENCY_PEER_DEPARTURE_MISSES,
+) {
 
-    private var currentCycle: Long = Long.MIN_VALUE
-    private val seenThisCycle = LinkedHashSet<String>()
+    /** cycle index -> peers seen in it. Only the [retainedCycles] most recent are open. */
+    private val seenByCycle = LinkedHashMap<Long, LinkedHashSet<String>>()
+    private var highestCycle: Long = UNSET
+
+    /** peer key -> consecutive cycles missed. Presence means "this peer is expected to be heard". */
+    private val expected = LinkedHashMap<String, Int>()
+
+    private val pendingMisses = ArrayDeque<LatencyMiss>()
 
     /** Bounded, screen only. The file holds every sample. See [SpikeTiming.LATENCY_SCREEN_SAMPLE_CAP]. */
     private val samplesMs = ArrayDeque<Long>()
@@ -341,32 +398,60 @@ internal class LatencyTracker {
     var afterOnWindow: Long = 0L
         private set
 
-    /** Cycles in which a peer that was expected produced nothing at all. Counted, never inferred. */
+    /**
+     * Peer-cycles in which a peer that was expected produced nothing at all. Counted, never
+     * inferred — see the class KDoc for what it took to make that sentence true.
+     */
     var missedCycles: Long = 0L
         private set
 
-    private var lastCycleExpectedPeers = 0
+    /** Peers that missed [departureMisses] cycles in a row and stopped being expected. */
+    var peersDeparted: Long = 0L
+        private set
+
+    /** Cycles that have fully elapsed and been accounted for. The denominator of a miss RATE. */
+    var cyclesClosed: Long = 0L
+        private set
+
+    /** Sightings attributed to a cycle that had already closed. Recorded, not silently dropped. */
+    var lateArrivals: Long = 0L
+        private set
 
     /**
-     * @return the latency in milliseconds if this is the FIRST sighting of [peerKey] in the current
-     *   cycle, or `null` if the peer has already been counted this cycle (in which case there is
-     *   nothing to record — every subsequent packet in the cycle is density data, not latency data).
+     * Cycles skipped because the harness was not running (Doze, OEM kill, process suspension).
+     *
+     * NOT counted as misses. We were not listening, so "the peer was not heard" says nothing about
+     * the peer. It is its own finding — and on the OEM-kill runs it is THE finding.
+     */
+    var unaccountedCycles: Long = 0L
+        private set
+
+    /** Miss rows the queue could not hold because nobody drained it. A loss, so it is counted. */
+    var missRowsDropped: Long = 0L
+        private set
+
+    /** Peers currently expected to be heard each cycle. */
+    val expectedPeers: Int get() = expected.size
+
+    /**
+     * @return the latency in milliseconds if this is the FIRST sighting of [peerKey] in the cycle
+     *   the sighting is attributed to, or `null` if the peer has already been counted in that cycle
+     *   (every subsequent packet in a cycle is density data, not latency data) or if that cycle has
+     *   already been closed and accounted for.
      */
     fun onSighting(peerKey: String, observedAtEpochMs: Long): LatencySample? {
         val cycle = LatencyCycle.attributedCycleIndex(observedAtEpochMs)
-        if (cycle != currentCycle) {
-            if (currentCycle != Long.MIN_VALUE) {
-                // A peer we saw last cycle and did not see this one is a MISS, and a miss is not the
-                // same as a slow discovery. Counted separately so a p50 computed over successful
-                // acquisitions can never quietly hide a 40 % failure rate.
-                val missed = lastCycleExpectedPeers - seenThisCycle.size
-                if (missed > 0) missedCycles += missed.toLong()
-            }
-            lastCycleExpectedPeers = maxOf(lastCycleExpectedPeers, seenThisCycle.size)
-            currentCycle = cycle
-            seenThisCycle.clear()
+        advanceToCycle(cycle)
+
+        val seen = seenByCycle[cycle]
+        if (seen == null) {
+            // The cycle this belongs to has already been closed and its misses counted. Re-opening
+            // it would let a late packet retroactively un-miss a peer, which is the one direction
+            // the counter must not be able to move.
+            lateArrivals++
+            return null
         }
-        if (!seenThisCycle.add(peerKey)) return null
+        if (!seen.add(peerKey)) return null
 
         val cycleStart = LatencyCycle.attributedCycleStartMs(observedAtEpochMs)
         val latency = observedAtEpochMs - cycleStart
@@ -388,16 +473,142 @@ internal class LatencyTracker {
         )
     }
 
+    /**
+     * TIMER ENTRY POINT. Advance the cycle to whichever one contains [nowMs], closing and
+     * accounting for every cycle that has fully elapsed.
+     *
+     * This is what makes a total blackout countable. Call it whether or not anything was heard —
+     * ESPECIALLY when nothing was heard.
+     */
+    fun advanceTo(nowMs: Long) {
+        advanceToCycle(LatencyCycle.attributedCycleIndex(nowMs))
+    }
+
+    /**
+     * END OF RUN. Account for every cycle that has FULLY ELAPSED by [nowMs] and is still open.
+     *
+     * Called from `SpikeController.stop`, and it is the counterpart of the trailing density-bucket
+     * flush: without it the [retainedCycles] accounting lag would silently discard the misses in
+     * the last minute or two of every run — and on an OEM-kill capture the last two minutes are the
+     * entire finding.
+     *
+     * THE IN-PROGRESS CYCLE IS LEFT ALONE. A cycle that has not finished cannot have been missed;
+     * counting it would manufacture one miss per expected peer at every single stop, which is the
+     * instrument reporting a failure it caused by being switched off.
+     */
+    fun closeElapsedCycles(nowMs: Long) {
+        val currentCycle = LatencyCycle.attributedCycleIndex(nowMs)
+        seenByCycle.keys.toList()
+            .filter { it < currentCycle }
+            .forEach(::closeCycle)
+    }
+
+    /** Take the miss rows accumulated since the last call. The caller writes them to the file. */
+    fun drainMisses(): List<LatencyMiss> {
+        if (pendingMisses.isEmpty()) return emptyList()
+        val out = pendingMisses.toList()
+        pendingMisses.clear()
+        return out
+    }
+
+    private fun advanceToCycle(cycle: Long) {
+        if (highestCycle == UNSET) {
+            highestCycle = cycle
+            seenByCycle[cycle] = LinkedHashSet()
+            return
+        }
+        if (cycle <= highestCycle) return
+
+        val gap = cycle - highestCycle
+        if (gap > MAX_CATCHUP_CYCLES) {
+            // We were not running. Close what is open — those cycles we did observe — and record
+            // the rest as unaccounted rather than manufacturing a miss per peer per cycle for a
+            // period during which our receiver was off. See the class KDoc.
+            seenByCycle.keys.toList().forEach(::closeCycle)
+            unaccountedCycles += gap - 1
+            expected.keys.toList().forEach { expected[it] = 0 }
+            highestCycle = cycle
+            seenByCycle[cycle] = LinkedHashSet()
+            return
+        }
+
+        var c = highestCycle + 1
+        while (c <= cycle) {
+            seenByCycle[c] = LinkedHashSet()
+            highestCycle = c
+            while (seenByCycle.size > retainedCycles) {
+                closeCycle(seenByCycle.keys.first())
+            }
+            c++
+        }
+    }
+
+    /**
+     * A cycle has fully elapsed. Every expected peer that was not heard in it is a miss.
+     *
+     * A peer heard for the first time in this cycle JOINS the expected set as this cycle closes,
+     * not before: it cannot have been missed in the cycles before we knew it existed.
+     */
+    private fun closeCycle(cycle: Long) {
+        val seen = seenByCycle.remove(cycle) ?: return
+        cyclesClosed++
+        val cycleStart = cycle * SpikeTiming.LATENCY_CYCLE_MS
+
+        for (peer in expected.keys.toList()) {
+            if (peer in seen) {
+                expected[peer] = 0
+                continue
+            }
+            missedCycles++
+            val consecutive = (expected[peer] ?: 0) + 1
+            val departed = consecutive >= departureMisses
+            if (departed) {
+                expected.remove(peer)
+                peersDeparted++
+            } else {
+                expected[peer] = consecutive
+            }
+            enqueueMiss(
+                LatencyMiss(
+                    cycleIndex = cycle,
+                    cycleStartUtcMs = cycleStart,
+                    peerKey = peer,
+                    consecutiveMisses = consecutive,
+                    departed = departed,
+                ),
+            )
+        }
+
+        for (peer in seen) expected.putIfAbsent(peer, 0)
+    }
+
+    private fun enqueueMiss(miss: LatencyMiss) {
+        if (pendingMisses.size >= MAX_PENDING_MISSES) {
+            // Counted, never silent. The queue only grows if the drain stopped, which is itself
+            // worth knowing; dropping without counting would under-report misses, and this whole
+            // class exists because under-reporting misses flatters the result.
+            missRowsDropped++
+            return
+        }
+        pendingMisses.addLast(miss)
+    }
+
     fun reset() {
-        currentCycle = Long.MIN_VALUE
-        seenThisCycle.clear()
+        seenByCycle.clear()
+        expected.clear()
+        pendingMisses.clear()
+        highestCycle = UNSET
         samplesMs.clear()
         totalSamples = 0L
         minLatencyMs = Long.MAX_VALUE
         maxLatencyMs = Long.MIN_VALUE
         afterOnWindow = 0L
         missedCycles = 0L
-        lastCycleExpectedPeers = 0
+        peersDeparted = 0L
+        cyclesClosed = 0L
+        lateArrivals = 0L
+        unaccountedCycles = 0L
+        missRowsDropped = 0L
     }
 
     /**
@@ -413,7 +624,40 @@ internal class LatencyTracker {
         val rank = Math.ceil(p / 100.0 * sorted.size).toInt().coerceIn(1, sorted.size)
         return sorted[rank - 1]
     }
+
+    private companion object {
+        const val UNSET = Long.MIN_VALUE
+
+        /**
+         * Beyond this many cycles in one jump, the gap is treated as "we were not running" rather
+         * than as misses. 5 cycles is 5 minutes at [SpikeTiming.LATENCY_CYCLE_MS] — far longer than
+         * any scheduling delay on a foreground service, and far shorter than a Doze window or an
+         * OEM kill. A jump this large means the timer did not fire, and the timer not firing is not
+         * evidence about the peer.
+         */
+        const val MAX_CATCHUP_CYCLES = 5L
+
+        /** Queue bound. Only reachable if the drain stopped; overflow is counted, never silent. */
+        const val MAX_PENDING_MISSES = 1_024
+    }
 }
+
+/**
+ * One peer-cycle in which an expected peer produced nothing.
+ *
+ * WRITTEN TO `latency.csv` AS ITS OWN ROW, with an EMPTY latency column. A miss is not a slow
+ * discovery and must not share a numeric column with one — an absent measurement rendered as a zero
+ * is an excellent measurement to anything that later takes a mean.
+ */
+internal data class LatencyMiss(
+    val cycleIndex: Long,
+    val cycleStartUtcMs: Long,
+    val peerKey: String,
+    /** How many cycles in a row this peer has now missed, this one included. */
+    val consecutiveMisses: Int,
+    /** True on the miss that crossed [SpikeTiming.LATENCY_PEER_DEPARTURE_MISSES]. Fires once. */
+    val departed: Boolean,
+)
 
 /** One recorded first-sighting. Written straight to `latency.csv`; nothing is buffered per cycle. */
 internal data class LatencySample(

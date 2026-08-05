@@ -197,6 +197,21 @@ internal fun SpikeScreen(
 
         HorizontalDivider(color = colors.outline)
 
+        // THE RUN REFUSED TO START. Above everything else, in danger, with the reason spelled out:
+        // the previous behaviour was an exception escaping through the foreground service, which
+        // killed the instrument while its "Radius spike running" notification stayed on screen.
+        // A person in a car park needs to be told the file could not be opened, not left watching
+        // a counter that will never move.
+        if (stats.startFailure.isNotEmpty()) {
+            Text("RUN REFUSED — NOTHING IS BEING RECORDED", color = colors.danger)
+            Text(
+                text = stats.startFailure,
+                color = colors.danger,
+                modifier = Modifier.semantics { contentDescription = stats.startFailure },
+            )
+            HorizontalDivider(color = colors.outline)
+        }
+
         // ------------------------------------------------------------------ integrity first
         Text("CAPTURE INTEGRITY", color = colors.ink)
         Text(
@@ -222,6 +237,12 @@ internal fun SpikeScreen(
         Stat("Max", stats.latencyMaxMs.msOrDash())
         Stat("First seen AFTER the ON window", stats.latencyAfterOnWindow.toString())
         Stat("Peer-cycles with no sighting at all", stats.latencyMissedPeerCycles.toString())
+        // The three numbers that make the miss count readable. A high miss count against one
+        // departed peer is a handset that died; the same count spread over several expected peers
+        // with none departed is an acquisition-rate problem. Different findings, different fixes.
+        Stat("Peers expected each cycle", stats.latencyPeersExpected.toString())
+        Stat("Peers that went away and stayed away", stats.latencyPeersDeparted.toString())
+        Stat("Cycles closed (miss-rate denominator)", stats.latencyCyclesClosed.toString())
         Stat("Our own transmit lag from cycle start", stats.emitStartLagMs.msOrDash())
         Stat(
             "Network time (for the error bar)",
@@ -335,6 +356,10 @@ internal fun SpikeScreen(
         Stat("Carrier B candidates (UUID, no service data)", stats.carrierBObservations.toString())
         Stat("Self-eid frames (E_SELF_EID)", stats.selfEidDrops.toString())
         Stat("Diagnostic records DROPPED by us", stats.diagnosticsDropped.toString())
+        // A different loss from the one above, and worse: a lost SCAN_STOPPED leaves the duty
+        // ledger's interval open and inflates scan_on_ms, which is what the battery figure is
+        // divided by. Shown separately so the two are never read as one number.
+        Stat("Radio LIFECYCLE events lost (corrupts scan_on_ms)", stats.radioEventsDropped.toString())
         Stat("File write failures", stats.writeFailures.toString())
 
         Text("Resolved peers by slot", color = colors.ink)

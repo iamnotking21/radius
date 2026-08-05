@@ -31,6 +31,12 @@ package com.radius.android.spike
  */
 internal data class SpikeStats(
     val running: Boolean = false,
+    /**
+     * Why the last start attempt refused, or empty. Non-empty means NO RUN IS IN PROGRESS and no
+     * file exists for the attempt — the harness could not open its capture files and said so
+     * instead of crashing through the foreground service. Rendered in the danger colour.
+     */
+    val startFailure: String = "",
     val runId: String = "-",
     val elapsedMillis: Long = 0L,
     val directory: String = "-",
@@ -64,6 +70,14 @@ internal data class SpikeStats(
     val peripheralRoleSupported: Boolean = false,
 
     val diagnosticsDropped: Long = 0L,
+    /**
+     * Radio LIFECYCLE events the radio produced and could not hand over. A different hole from
+     * [diagnosticsDropped] and a worse-behaved one: a lost `SCAN_STOPPED` leaves `SpikeDutyLedger`
+     * with an interval that never closes, which inflates `scan_on_ms` — the denominator that makes
+     * the whole battery figure attributable. A dropped sighting costs one row; a dropped event
+     * corrupts a total.
+     */
+    val radioEventsDropped: Long = 0L,
     val writeFailures: Long = 0L,
     val lastEventLine: String = "",
 
@@ -113,7 +127,13 @@ internal data class SpikeStats(
     val latencyMinMs: Long? = null,
     val latencyMaxMs: Long? = null,
     val latencyAfterOnWindow: Long = 0L,
+    /** Peer-cycles that produced nothing. TIMER-driven, so a total blackout still counts. */
     val latencyMissedPeerCycles: Long = 0L,
+    /** Peers that missed enough consecutive cycles to be recorded as gone. See LatencyTracker. */
+    val latencyPeersDeparted: Long = 0L,
+    /** Peers currently expected to be heard every cycle. The denominator of a miss rate. */
+    val latencyPeersExpected: Int = 0,
+    val latencyCyclesClosed: Long = 0L,
     /** This device's own transmit-side lag from cycle start, on ONE clock. Subtractable honestly. */
     val emitStartLagMs: Long = -1L,
     val networkTimeAvailable: Boolean = false,
@@ -140,9 +160,17 @@ internal data class SpikeStats(
      */
     val integrityNote: String
         get() = when {
-            diagnosticsDropped > 0L || writeFailures > 0L ->
-                "DEGRADED — $diagnosticsDropped dropped, $writeFailures write failures. " +
-                    "Gaps in this file are OURS. Treat absence claims as void."
+            startFailure.isNotEmpty() -> "NOT RUNNING — $startFailure"
+            diagnosticsDropped > 0L || writeFailures > 0L || radioEventsDropped > 0L ->
+                "DEGRADED — $diagnosticsDropped dropped, $radioEventsDropped radio events lost, " +
+                    "$writeFailures write failures. Gaps in this file are OURS. Treat absence " +
+                    "claims as void." +
+                    if (radioEventsDropped > 0L) {
+                        " A LOST RADIO EVENT ALSO CORRUPTS scan_on_ms: an unclosed scan interval " +
+                            "inflates it, so the battery attribution is wrong too, not just gappy."
+                    } else {
+                        ""
+                    }
             mode == SpikeMode.LATENCY_PROBE && (bridgedAddresses > 0 || bridgedEids > 0) ->
                 "BRIDGING COUNTERS VOID IN THIS MODE — the latency probe stops and restarts our " +
                     "own transmitter once per cycle, which rotates our address INSIDE a protocol " +

@@ -81,6 +81,13 @@ public actual class BleRadio(
     private var epochBoundaryListener: EpochBoundaryListener? = null
 
     /**
+     * Set once by [shutdown] and never cleared. Feeds [EpochTickerPolicy.wanted] so the ticker
+     * predicate is the same expression on both platforms, and gates listener registration so a
+     * post-shutdown caller cannot re-pin a key ring on a dead radio (ruling R-D).
+     */
+    private var isShutdown = false
+
+    /**
      * `tryEmit` and `MutableStateFlow.value` are both thread-safe, which is what makes the
      * "may be called from any queue" clause in [BleRadioPort] safe to promise Swift.
      */
@@ -99,6 +106,10 @@ public actual class BleRadio(
     }
 
     public actual fun setEpochBoundaryListener(listener: EpochBoundaryListener?) {
+        // Refused after shutdown, not merely ineffective: the reference holds the KEY RING, and
+        // pinning it on a dead radio for the life of the process is exactly the retention ruling
+        // R-D made shutdown() null it for. Identical to the Android actual.
+        if (isShutdown) return
         epochBoundaryListener = listener
         syncEpochTicker()
     }
@@ -144,6 +155,7 @@ public actual class BleRadio(
      * on [BleRadioPort]. Without that, this object leaks for the life of the process.
      */
     public actual fun shutdown() {
+        isShutdown = true
         desiredAdvertise = null
         epochJob?.cancel()
         epochJob = null
@@ -181,18 +193,24 @@ public actual class BleRadio(
     /**
      * NO JITTER. `KEY_SCHEDULE.md` §3 — see the identical note on the Android actual.
      *
-     * DEVICE-SCOPED, not advertising-scoped, for the same reason as Android: `pruneSupersededAt`
-     * (§8.5.2) is owed by every device that holds a ring, and under decision 35 that is mostly
-     * scan-only devices which never advertise at all. The ticker therefore runs while EITHER an
-     * advertisement is wanted OR an epoch listener is registered.
+     * RING-SCOPED, not radio-scoped: `pruneSupersededAt` (§8.5.2) is owed by every device that
+     * holds a ring, and under decision 35 that is mostly scan-only devices which never advertise at
+     * all. The ticker therefore runs while EITHER an advertisement is wanted OR an epoch listener
+     * is registered.
      *
-     * The iOS actual cannot key off "is scanning" the way Android does, because scanning here is
-     * delegated straight to the Swift port and this class keeps no scan state. Registering an
-     * [EpochBoundaryListener] is the signal instead — which is correct rather than a workaround:
-     * the listener existing IS the statement that something holds a ring.
+     * This actual could never key off "is scanning" the way Android used to, because scanning here
+     * is delegated straight to the Swift port and this class keeps no scan state. That constraint
+     * turned out to be the CORRECT generalisation rather than a workaround — the listener existing
+     * IS the statement that something holds a ring — and Android has now been corrected to match.
+     * The predicate itself lives in [EpochTickerPolicy], in `commonMain`, so the agreement is
+     * structural instead of a comment in two files claiming the same thing.
      */
     private fun syncEpochTicker() {
-        val wanted = desiredAdvertise != null || epochBoundaryListener != null
+        val wanted = EpochTickerPolicy.wanted(
+            isShutdown = isShutdown,
+            advertising = desiredAdvertise != null,
+            hasEpochListener = epochBoundaryListener != null,
+        )
         if (!wanted) {
             epochJob?.cancel()
             epochJob = null

@@ -7,16 +7,16 @@ phase: 0 — BLE feasibility spike. CODE COMPLETE to the limit of this machine.
 blocking-everything: ZERO hardware measurement exists. go/no-go memo has an empty results table.
 mobile arch: KOTLIN MULTIPLATFORM shared core + native UI (ADR-007). ANDROID FIRST, iOS deferred.
 repo: github.com/iamnotking21/radius · main · PUBLIC · CI green on ubuntu-latest
-infra: not provisioned. backend/ and website/ contain one memory file each. ~6% of v1.
-  (9.4k lines Kotlin · 1.2k Swift · 0 Go · 0 TS · 0 design tokens · 0 proto · 0 migrations)
+infra: not provisioned. backend/ and website/ contain one memory file each. ~7% of v1.
+  (12.5k lines Kotlin · 1.2k Swift · 0 Go · 0 TS · 0 design tokens · 0 proto · 0 migrations)
 contracts: proto v0 NOT locked · shared API v0.1 GATED · BLE wire v0.1 written, 0/16 cells measured
 hires: 0/2 BLE specialists
 
 ## VERIFIED — by a compiler or the GitHub API, not by assertion
 build: Temurin JDK21 · wrapper 8.13 · AGP 8.9 · Kotlin 2.1.20 · SDK 35
   :shared + :android compile · assembleDebug + assembleRelease (R8) · lint 0 errors
-  89 unit tests (was 63; +26 for the spike measurement maths) · 116 conformance vectors executing ·
-  80 gate self-test assertions
+  114 unit tests (69 shared + 45 android) · 116 conformance vectors executing ·
+  80 gate self-test assertions. code-reviewer post-merge audit applied: 14 must-fix landed.
 CI: run 4 fully green, all 3 jobs, ubuntu-latest. Android toolchain proven on Linux.
   CI has already caught one real bug local testing structurally could not (a Windows-only
   assertion inside the fix for a Windows-only hardcode).
@@ -123,3 +123,41 @@ DEFERRED: all iOS · Mac · Carrier B validation · B7 · relay-only calling (G5
   have manufactured the project's top-severity finding.
   (c) lintDebug caught `currentNetworkTimeClock()` being API 33 while the KDoc claimed API 29.
   Would have crashed on the first budget handset. See NEXT item 0.
+2026-08-05 android-kotlin · code-reviewer post-merge audit (first ever on this repo) → REQUEST-CHANGES,
+  14 must-fix. Fixed 12 of them plus finding 8 after the orchestrator's ruling; 9/10 (iosMain) and
+  17 (contract) stayed out. No invariant touched. The pattern across almost all of them is one thing:
+  EVERY DEFECT FAILED IN THE FLATTERING DIRECTION. That is worth more than the individual fixes.
+  (a) LatencyTracker.missedCycles was sighting-driven, so a cycle in which nothing was heard never
+  ended and no miss was ever attributed to it. A peer dying at minute 10 of 90 froze the counter and
+  the p50 over those ten good minutes read clean for the whole run — the exact hiding its own KDoc
+  ("Counted, never inferred") promised it prevented. And "expected" was a monotone high-water mark,
+  so one peer legitimately leaving manufactured a miss per remaining cycle forever. Now timer-driven
+  with an explicit expected set and a DEPARTED threshold. It had NO test; it now has 11.
+  (b) battery %/hr divided by wall clock. An NTP re-sync mid-capture silently rewrites the
+  denominator of every figure in the run, and it was unrecoverable in analysis because the sample
+  carried no monotonic timestamp. Both clocks are now in battery.csv, so a re-sync is visible as a
+  step between two columns instead of a wrong answer.
+  (c) SpikeWriter appended from four threads with no lock. appendLine is write-then-newLine = two
+  monitor acquisitions, so rows TEAR — breaking the one property events.jsonl is documented to have
+  (line-oriented, so an OEM kill still leaves a valid file). Worse than the audit said: post-close
+  appends hit a nulled handle and were SILENTLY counted as written, so the last rows of every run
+  vanished and write_failures said 0.
+  (d) scan was stopped BEFORE ScanStartGate was consulted — a refused start left the radio blind for
+  up to 30s, which is the exact dead-air the gate exists to prevent. Gate first now.
+  (e) two accumulator maps bumped outside the lock while publish() copy-constructs them from three
+  threads. CME inside a collect with no handler = process death at minute 47 and an unexplained gap.
+  Kept: decision-61 lock discipline, no lock across a suspension point, AdvertiseGuard parity.
+  114 tests green incl conformance vectors; lintDebug clean. STILL ZERO RADIO EVIDENCE — every fix
+  here is desk work and the numbers this instrument produces are still unmeasured.
+2026-08-05 android-kotlin · finding 8 ruling applied (orchestrator corrected decision row 60, not me).
+  Epoch ticker predicate is now EpochTickerPolicy.wanted() in commonMain, called by both actuals;
+  desiredScan dropped out entirely. Ghost mode — one tap, the highest-signal privacy assertion in
+  the product — was switching OFF key destruction, while a low-signal adapter-off event kept it
+  running. iOS had the right predicate by accident (it holds no scan state). setEpochBoundaryListener
+  now syncs the ticker and refuses registration after shutdown (R-D ring pinning). The predicate was
+  a boolean expression written twice in two files neither of which can be instantiated without a
+  platform — moving it to a pure function of three booleans is what made it testable at all.
+  CONDITION IN THE CODE: the ruling holds only because the ticker is a coroutine delay, which cannot
+  wake a Dozing SoC. Promote it to setExactAndAllowWhileIdle and 96 exact alarms/day land on a
+  CI-gated battery contract — noted at both call sites. Decision 78: when ring persistence lands the
+  guarantee moves to prune-on-load in the ring store, because the radio's lifetime is not the ring's.

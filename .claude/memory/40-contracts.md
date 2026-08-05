@@ -86,8 +86,16 @@ GATED 2026-08-04 — `EpochBoundaryListener` + `BleRadio.setEpochBoundaryListene
   ANNOUNCES the boundary; whoever holds the ring acts. the radio still never learns what a key is —
   deliberately not re-coupled to the ring in order to fix this.
 CALLER OBLIGATION, GATED — `KeyRing.pruneSupersededAt(day, epoch)` MUST be driven by every platform
-  from a DEVICE-SCOPED epoch ticker: scanning OR advertising, and across adapter-off.
+  from an epoch ticker whose predicate is EXACTLY (decision 77, corrects decision 60):
+      !isShutdown && (advertising wanted || epoch listener registered)
+  `desiredScan` IS NOT A TERM. scanning is a reason for neither of the ticker's two jobs, and
+  leaving it in the predicate is what caused the defect — it invites the reader to believe
+  scanning is WHY the ticker runs. one shared pure function `EpochTickerPolicy.wanted()` in
+  commonMain, called by both actuals, so the platforms cannot drift on when an IRREVERSIBLE
+  security obligation runs. `setEpochBoundaryListener` MUST re-evaluate it on both.
   NOT the advertising restart — that was the orchestrator's original instruction and it was WRONG.
+  NOT scan state either — that was the orchestrator's SECOND wrong instruction (row 60), which
+  Android implemented faithfully, so turning Radar off ended key destruction.
   frameForEpoch only runs on an advertiser; decision 35 makes everything else SCAN_ONLY; a
   scan-only device still holds a full ring. advertising-scoped pruning fixes the HIGH on one device
   per account and leaves it live on the entire rest of the fleet.
@@ -159,7 +167,23 @@ SEAM (decision 21): commands PULL, events PUSH. value types only.
 
 SURFACE: core{RadiusConfig, RadiusCore(internal ctor), FlowAdapter, RadiusCancellable} ·
   ble{BleRadio, BleRadioPort, BleRadioListener, RawSighting, AdvertiseRequest, ScanRequest,
-      DutyProfile, RadioAvailability, BleOutcome} ·
+      DutyProfile, RadioAvailability, BleOutcome,
+      AdvertisePayloadSource, AdvertiseRoleSource, AdvertiseStatus, AdvertiseState} ·
+  DRIFT CORRECTED 2026-08-05 — those last four were public in commonMain and absent from this
+  list. explicitApi() is on, so this list is meant to be exhaustive BY CONSTRUCTION; it was not.
+  Gated retroactively rather than made internal: all four are load-bearing for decision 49
+  (payload source called per epoch, so the radio cannot cache a frame across a seam) and for
+  one-advertiser-per-account, and iOS will need them at un-deferral.
+ANDROIDMAIN DIAGNOSTICS SURFACE — GATED 2026-08-05, with a deletion obligation attached:
+  BleRadio.setDiagnosticsEnabled · androidDiagnostics · androidEvents · diagnosticsDropped ·
+  setScanModeOverride · peripheralRoleSupported · multipleAdvertisementSupported ·
+  AndroidSightingDiagnostic · AndroidRadioEvent
+  These are public in :shared androidMain, therefore PRESENT IN THE RELEASE APK and callable
+  from src/main — not contained by living next to a debug-only consumer, as their own KDoc
+  claimed. Payload is peer MAC + unfiltered RSSI. code-reviewer flagged the overstatement.
+  Containment is BY REVIEW, not structural. Compare the absent INTERNET permission, which is
+  structural. OBLIGATION: these go `internal` + debug-only source set when the Phase 0 harness
+  is deleted, and that is a release-gate item, not a checklist nicety.
   domain{AppMode, UlidString=String} · discover{DiscoverCandidate, DailyDiscoverSet,
   DiscoverDecision, DiscoverFeed} · radar{ProximityBand, RadarNode, WaveState, RadarVisibility,
   RadarRunState, Encounter, RadarController} · threads{Transport, Direction, ThreadSummary,

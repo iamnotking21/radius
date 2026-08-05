@@ -23,12 +23,15 @@ import com.radius.shared.protocol.ProtocolResult
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeoutOrNull
 import java.security.SecureRandom
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -84,6 +87,27 @@ internal class SpikeController @Inject constructor(
     private var startedAtMillis = 0L
     private var seq = 0L
     private var lastPublishUptimeMs = 0L
+
+    /**
+     * THE AUTHORITATIVE RUN FLAG. Read and written ONLY under [lock].
+     *
+     * It used to be `_stats.value.running`, which is a copy published by whichever thread last
+     * called [publish] — and [publish] is called from the diagnostics collector, the radio-event
+     * collector, the battery sampler and the density loop. A radio event arriving a few
+     * microseconds after [start] republished the stats it had read BEFORE the run began would put
+     * `running=false` back over a live run. The screen then offers Start; [start] runs again;
+     * [writer] is overwritten without being closed, leaking the first run's file handles and
+     * abandoning a half-written capture directory that nothing will ever finalise.
+     *
+     * A published snapshot is a VIEW. It must never also be the state machine.
+     */
+    private var runningFlag = false
+
+    /**
+     * Why the last [start] refused, or empty. Shown on screen — see finding 12: a harness that
+     * could not open its files must say so, not crash and not pretend to be running.
+     */
+    private var startFailure = ""
 
     // --- accumulators. Only touched from [scope], which is single-writer per stream via `mutex`.
     private val addrToEids = LinkedHashMap<String, MutableSet<String>>()
@@ -155,7 +179,7 @@ internal class SpikeController @Inject constructor(
     // -------------------------------------------------------------------------------------------
 
     fun updateConfig(config: SpikeConfig) {
-        if (_stats.value.running) {
+        if (synchronized(lock) { runningFlag }) {
             // A run whose parameters changed halfway through is two measurements someone will
             // average. Restart instead, into a new file.
             stop()
@@ -165,8 +189,23 @@ internal class SpikeController @Inject constructor(
 
     fun start() {
         synchronized(lock) {
-            if (_stats.value.running) return
+            // CLAIM THE RUN UNDER THE LOCK. Two threads reaching here together — the service and
+            // the screen, or two taps — must produce exactly one run, and the loser must not get as
+            // far as constructing a second SpikeWriter over the first one's directory.
+            if (runningFlag) return
+
+            // A writer surviving into a new run is a leak AND an orphaned capture: its handles stay
+            // open, its meta.json never gets its closing counters, and nothing on the screen refers
+            // to it again. It can only exist if a previous stop() did not complete, which is worth
+            // saying out loud in the log rather than tidying away silently.
+            writer?.let { stale ->
+                Log.w(TAG, "start(): a writer from run ${stale.runId} was still open. Closing it.")
+                runCatching { stale.close() }
+            }
+            writer = null
             resetAccumulators()
+            startFailure = ""
+            runningFlag = true
         }
 
         val cfg = _config.value
@@ -200,8 +239,28 @@ internal class SpikeController @Inject constructor(
         clockAtStart.describe("clock_start").forEach { (k, v) -> notes[k] = v }
         batteryReader.capabilities().forEach { (k, v) -> notes[k] = v }
 
-        w.open(config = cfg, radioNotes = notes)
-        writer = w
+        // THE INSTRUMENT REFUSES TO RUN RATHER THAN CRASHING. External storage can be unmounted,
+        // the directory can be unwritable, the disk can be full. This method is called from
+        // SpikeForegroundService.onStartCommand AFTER startForeground() has already succeeded, so
+        // an escaping exception here kills the process with a "Radius spike running" notification
+        // on screen and no file to show for it — the instrument failing in the one way it must not,
+        // silently and while claiming to work.
+        try {
+            w.open(config = cfg, radioNotes = notes)
+        } catch (error: Throwable) {
+            Log.e(TAG, "SPIKE COULD NOT OPEN ITS CAPTURE FILES — refusing to run", error)
+            synchronized(lock) {
+                runningFlag = false
+                writer = null
+                startFailure = "CANNOT WRITE THE CAPTURE — ${error.javaClass.simpleName}: " +
+                    "${error.message ?: "no detail"}. Directory: ${w.directory}. " +
+                    "Nothing was started; there is no file for this attempt."
+            }
+            publish()
+            return
+        }
+
+        synchronized(lock) { writer = w }
         startedAtMillis = System.currentTimeMillis()
         duty.start()
 
@@ -220,7 +279,7 @@ internal class SpikeController @Inject constructor(
                     "result for this mode, not a failure.",
             )
             jobs += scope.launch { batterySamplerLoop() }
-            publish(running = true)
+            publish()
             return
         }
 
@@ -309,7 +368,14 @@ internal class SpikeController @Inject constructor(
         jobs += scope.launch { batterySamplerLoop() }
         jobs += scope.launch { densityBucketLoop() }
 
-        publish(running = true)
+        if (cfg.mode == SpikeMode.LATENCY_PROBE) {
+            // THE MISS DETECTOR, ON A TIMER. It runs on the SCAN side and therefore regardless of
+            // `cfg.advertise` — a scan-only probe handset still needs to count the cycles in which
+            // the peer said nothing. See latencyCycleLoop and LatencyTracker.advanceTo.
+            jobs += scope.launch { latencyCycleLoop() }
+        }
+
+        publish()
     }
 
     // -------------------------------------------------------------------------------------------
@@ -331,7 +397,7 @@ internal class SpikeController @Inject constructor(
     }
 
     private fun sampleBattery() {
-        val w = writer ?: return
+        val w = synchronized(lock) { writer } ?: return
         val cfg = _config.value
         val sample = batteryReader.read()
         val n = synchronized(lock) { ++batterySamples }
@@ -346,6 +412,9 @@ internal class SpikeController @Inject constructor(
                 sample.wallUtcMs.toString(),
                 SpikeWriter.isoUtc(sample.wallUtcMs),
                 (sample.wallUtcMs - startedAtMillis).toString(),
+                // THE DENOMINATOR, and it is a different column from elapsed_ms on purpose. Divide
+                // %/hr by differences of THIS one. See SpikeWriter.BATTERY_CSV_HEADER.
+                sample.elapsedRealtimeMs.toString(),
                 sample.levelPct.toString(),
                 sample.rawLevel.toString(),
                 sample.scale.toString(),
@@ -380,7 +449,7 @@ internal class SpikeController @Inject constructor(
                 validForDrain.toString(),
             ).joinToString(",") { csvCell(it) },
         )
-        publish(running = _stats.value.running)
+        publish()
     }
 
     /**
@@ -394,7 +463,7 @@ internal class SpikeController @Inject constructor(
             val nextBoundary = (Math.floorDiv(now, SpikeTiming.DENSITY_BUCKET_MS) + 1) *
                 SpikeTiming.DENSITY_BUCKET_MS
             delay((nextBoundary - now).coerceAtLeast(1L) + BUCKET_SETTLE_MS)
-            val w = writer ?: return
+            val w = synchronized(lock) { writer } ?: return
             val completed = synchronized(lock) {
                 densityAccumulator.advanceTo(
                     System.currentTimeMillis(),
@@ -407,7 +476,7 @@ internal class SpikeController @Inject constructor(
             synchronized(lock) {
                 concurrentPeersNow = densityAccumulator.concurrentPeers(System.currentTimeMillis())
             }
-            publish(running = _stats.value.running)
+            publish()
         }
     }
 
@@ -479,8 +548,44 @@ internal class SpikeController @Inject constructor(
         }
     }
 
+    /**
+     * go/no-go **P2**, the ABSENCE half. Advances the latency cycle on a TIMER rather than on a
+     * sighting, and writes down every peer-cycle that produced nothing.
+     *
+     * ## Why a timer, and why this is not a refactor
+     *
+     * `LatencyTracker.missedCycles` is documented "Counted, never inferred", and `SpikeLatency.kt`
+     * leans on it for the claim that a p50 computed over successful acquisitions cannot quietly
+     * hide a 40 % failure rate. It could not do that job while the only thing that advanced the
+     * cycle was a sighting: a cycle in which NOTHING was heard never fired the transition, so the
+     * counter simply stopped. If the peer handset died at minute 10 of a 90-minute run, the miss
+     * counter froze at whatever it was and the p50 over those first ten minutes read perfectly
+     * clean — the instrument's most flattering possible failure, in the exact place its KDoc
+     * promised it could not happen.
+     *
+     * A total blackout is the case the counter exists for, and a total blackout is precisely the
+     * case a sighting-driven design cannot see. So the clock advances it.
+     *
+     * Runs slightly past each boundary for the same reason the density loop does: a sighting whose
+     * `observedAtEpochMs` was back-dated by the `timestampNanos` conversion must land in the cycle
+     * it belongs to rather than in the one after.
+     */
+    private suspend fun latencyCycleLoop() {
+        while (kotlin.coroutines.coroutineContext.isActive) {
+            val now = System.currentTimeMillis()
+            val nextBoundary = LatencyCycle.cycleStartMs(now) + SpikeTiming.LATENCY_CYCLE_MS
+            delay((nextBoundary - now).coerceAtLeast(1L) + BUCKET_SETTLE_MS)
+            val misses = synchronized(lock) {
+                latency.advanceTo(System.currentTimeMillis())
+                latency.drainMisses()
+            }
+            misses.forEach(::writeLatencyMissRow)
+            publish()
+        }
+    }
+
     fun stop() {
-        val w = writer
+        val w = synchronized(lock) { writer }
         radio.stopAdvertising()
         radio.setAdvertiseRole(AdvertiseRole.SCAN_ONLY, AdvertiseRoleSource.DEBUG_SPIKE_HARNESS)
         radio.stopScan()
@@ -497,8 +602,29 @@ internal class SpikeController @Inject constructor(
             duty.onAdvertiseStopped()
         }
 
-        jobs.forEach { it.cancel() }
+        // CANCEL **AND JOIN**, BEFORE THE WRITER IS TOUCHED. `cancel()` alone only requests
+        // cancellation; it is observed at the next suspension point, and `onDiagnostic` has none —
+        // a collector already inside it runs to completion against the writer reference it
+        // captured. Those rows would land AFTER `closeMeta` had serialised `write_failures`, so
+        // they are lost and the file's own loss counter is one number too low. The rows lost this
+        // way are always the LAST rows of the run, which for an OEM-kill capture is the part
+        // somebody flew to a car park for.
+        //
+        // runBlocking on the caller's thread is acceptable HERE and would not be in the product:
+        // stop() is called from the service's onDestroy and from a debug screen, the collectors
+        // suspend or complete within a bounded handful of file writes, and the timeout below turns
+        // the pathological case into a recorded fact rather than an ANR.
+        val jobsToJoin = jobs
         jobs = mutableListOf()
+        val joined = runBlocking {
+            withTimeoutOrNull(STOP_JOIN_TIMEOUT_MS) {
+                jobsToJoin.forEach { it.cancelAndJoin() }
+                true
+            } ?: false
+        }
+        if (!joined) {
+            Log.w(TAG, "stop(): collectors did not finish within ${STOP_JOIN_TIMEOUT_MS}ms")
+        }
 
         if (w != null) {
             // One last battery point at the moment of stopping, so the run's endpoints are the run's
@@ -518,18 +644,42 @@ internal class SpikeController @Inject constructor(
             }
             trailing.forEach(::writeDensityBucket)
 
+            // Same argument as the trailing bucket above, for the other measurement. The miss
+            // accounting lags one cycle by design (see LatencyTracker.retainedCycles), so without
+            // this the misses in the last minute or two of every run are dropped — and on an
+            // OEM-kill capture that is the part somebody drove somewhere for. Only cycles that have
+            // FULLY elapsed are settled; the one in progress is not a miss, it is unfinished.
+            val trailingMisses = synchronized(lock) {
+                latency.closeElapsedCycles(System.currentTimeMillis())
+                latency.drainMisses()
+            }
+            trailingMisses.forEach(::writeLatencyMissRow)
+
             val cfg = _config.value
             val endClock = SpikeClockReference.capture()
             val summary = LinkedHashMap<String, String>()
             summary["ended_utc"] = SpikeWriter.isoUtc(System.currentTimeMillis())
             summary["duration_ms"] = (System.currentTimeMillis() - startedAtMillis).toString()
             summary["sightings"] = sightingCount.toString()
-            summary["unique_advertiser_addresses"] = addrToEids.size.toString()
-            summary["unique_ephemeral_ids"] = eidToAddrs.size.toString()
-            summary["bridged_addresses"] = bridgedAddresses().toString()
-            summary["bridged_eids"] = bridgedEids().toString()
+            // UNDER THE LOCK. These four read the same LinkedHashMaps the ingest path writes to, and
+            // `LinkedHashMap.size` / the copy-constructor iteration inside `bridged*` are not safe
+            // against a concurrent resizing put. The collectors are joined by now, which closes the
+            // race in practice; the lock is what makes it closed by CONSTRUCTION rather than by the
+            // reader having checked the ordering of the four statements above.
+            synchronized(lock) {
+                summary["unique_advertiser_addresses"] = addrToEids.size.toString()
+                summary["unique_ephemeral_ids"] = eidToAddrs.size.toString()
+                summary["bridged_addresses"] = bridgedAddresses().toString()
+                summary["bridged_eids"] = bridgedEids().toString()
+            }
             summary["diagnostics_dropped"] = radio.diagnosticsDropped.toString()
+            // A dropped radio EVENT is a different hole from a dropped diagnostic and has to be
+            // reported separately: a lost SCAN_STOPPED leaves the duty ledger with an unclosed
+            // interval, which inflates scan_on_ms — the denominator that makes the battery figure
+            // attributable at all. See BleRadio.eventsDropped.
+            summary["radio_events_dropped"] = radio.eventsDropped.toString()
             summary["write_failures"] = w.writeFailures.toString()
+            summary["stop_collectors_joined"] = joined.toString()
             summary["integrity"] = _stats.value.integrityNote
 
             // ---- P1 battery ----
@@ -539,6 +689,15 @@ internal class SpikeController @Inject constructor(
             summary["battery_ever_plugged"] = drain.everPlugged.toString()
             summary["battery_screen_on_samples"] = drain.screenOnSamples.toString()
             summary["battery_invalid_reason"] = drain.invalidReason(cfg.maxCapture, cfg.mode)
+            // The %/hr denominator, on the MONOTONIC clock. Recorded next to the wall-clock
+            // duration_ms above so the two are comparable at a glance.
+            summary["battery_elapsed_monotonic_ms"] = drain.elapsedMs.toString()
+            summary["wall_clock_step_ms"] = drain.wallClockStepMs.toString()
+            summary["wall_clock_step_note"] =
+                "wall clock minus monotonic clock over the run. NON-ZERO means the platform " +
+                    "re-synced (or someone set the clock) mid-capture: every %/hr figure is " +
+                    "already computed against elapsed_realtime_ms and is unaffected, but every " +
+                    "latency_ms in latency.csv is on the wall clock and IS affected."
             summary["scan_on_ms_total"] = duty.scanOnMs().toString()
             summary["advertise_on_ms_total"] = duty.advertiseOnMs().toString()
             summary["scan_on_pct_of_run"] = duty.scanOnPct().toString()
@@ -555,7 +714,21 @@ internal class SpikeController @Inject constructor(
             summary["latency_max_ms"] =
                 if (latency.totalSamples == 0L) "" else latency.maxLatencyMs.toString()
             summary["latency_after_on_window"] = latency.afterOnWindow.toString()
+            summary["latency_cycles_closed"] = latency.cyclesClosed.toString()
             summary["latency_missed_peer_cycles"] = latency.missedCycles.toString()
+            summary["latency_peers_departed"] = latency.peersDeparted.toString()
+            summary["latency_peers_expected_at_end"] = latency.expectedPeers.toString()
+            summary["latency_late_arrivals"] = latency.lateArrivals.toString()
+            summary["latency_unaccounted_cycles"] = latency.unaccountedCycles.toString()
+            summary["latency_miss_rows_dropped"] = latency.missRowsDropped.toString()
+            summary["latency_miss_accounting_note"] =
+                "missed_peer_cycles is TIMER-driven, not sighting-driven: a cycle in which NOTHING " +
+                    "was heard still closes and still counts. A peer missing " +
+                    "${SpikeTiming.LATENCY_PEER_DEPARTURE_MISSES} consecutive cycles is recorded " +
+                    "as DEPARTED and stops accruing misses — check peers_departed before reading " +
+                    "a clean p50. unaccounted_cycles is time the process was not running at all " +
+                    "(Doze, OEM kill): those cycles are NOT counted as misses because we were not " +
+                    "listening, and that is a separate finding."
             summary["latency_correction_required"] =
                 "YES — every latency_ms is uncorrected for the clock offset between handsets. " +
                     "Use the paired-sum estimator over BOTH devices' latency.csv, or subtract the " +
@@ -580,13 +753,16 @@ internal class SpikeController @Inject constructor(
             w.closeMeta(summary)
             w.close()
         }
-        writer = null
-        advertiseRequest = null
-        publish(running = false)
+        synchronized(lock) {
+            writer = null
+            advertiseRequest = null
+            runningFlag = false
+        }
+        publish()
     }
 
     fun flush() {
-        writer?.flush()
+        synchronized(lock) { writer }?.flush()
     }
 
     // -------------------------------------------------------------------------------------------
@@ -648,7 +824,7 @@ internal class SpikeController @Inject constructor(
     // -------------------------------------------------------------------------------------------
 
     private fun onDiagnostic(d: AndroidSightingDiagnostic) {
-        val w = writer ?: return
+        val w = synchronized(lock) { writer } ?: return
         val dayIndex = KeySchedule.dayIndex(d.observedAtEpochMs / 1000L)
         val epochIndex = KeySchedule.epochIndex(d.observedAtEpochMs / 1000L)
         rebuildResolutionTableIfNeeded(dayIndex, epochIndex)
@@ -676,7 +852,13 @@ internal class SpikeController @Inject constructor(
                     // wrong" from "nobody was there", which are the two most likely Phase 0
                     // outcomes. The error code is recorded and the raw bytes are kept.
                     decodeError = decoded.error.name
-                    bump(decodeErrors, decoded.error.name)
+                    // UNDER THE LOCK, like every other accumulator touch in this method. `publish`
+                    // copy-constructs this map from a different thread; a copy-constructor
+                    // iterating a LinkedHashMap that is being resized by a put throws
+                    // ConcurrentModificationException, inside a `collect` with no
+                    // CoroutineExceptionHandler, which kills the process. A 90-minute run would end
+                    // at minute 47 and the operator would be handed a gap instead of an error.
+                    synchronized(lock) { bump(decodeErrors, decoded.error.name) }
                 }
 
                 is ProtocolResult.Success -> {
@@ -731,9 +913,11 @@ internal class SpikeController @Inject constructor(
                     band = reading.band.name
                     confidence = reading.confidence.name
                     displayMetres = reading.displayMetres?.toString() ?: ""
-                    bump(bandCounts, reading.band.name)
 
                     synchronized(lock) {
+                        // Same lock as its immediate siblings, for the same reason: `publish` copies
+                        // bandCounts and decodeErrors together at every screen refresh.
+                        bump(bandCounts, reading.band.name)
                         addrToEids.getOrPut(d.advertiserAddress) { LinkedHashSet() }.add(eidHex)
                         eidToAddrs.getOrPut(eidHex) { LinkedHashSet() }.add(d.advertiserAddress)
                     }
@@ -780,7 +964,16 @@ internal class SpikeController @Inject constructor(
         if (_config.value.mode == SpikeMode.LATENCY_PROBE && selfEid != "true" &&
             decodeError.isEmpty() && eidHex.isNotEmpty()
         ) {
-            val sample = synchronized(lock) { latency.onSighting(peerKey, d.observedAtEpochMs) }
+            val sample: LatencySample?
+            val misses: List<LatencyMiss>
+            synchronized(lock) {
+                sample = latency.onSighting(peerKey, d.observedAtEpochMs)
+                // A sighting can itself close one or more cycles (it is the first thing heard in a
+                // new one), so the miss queue is drained here as well as on the timer. Draining in
+                // both places is what makes the counter independent of WHICH of the two noticed the
+                // boundary first.
+                misses = latency.drainMisses()
+            }
             if (sample != null) {
                 writeLatencyRow(
                     event = "SCAN_FIRST_SEEN",
@@ -791,6 +984,7 @@ internal class SpikeController @Inject constructor(
                     latencyMs = sample.latencyMs,
                 )
             }
+            misses.forEach(::writeLatencyMissRow)
         }
 
         val n = nextSeq()
@@ -870,7 +1064,7 @@ internal class SpikeController @Inject constructor(
         val now = SystemClock.uptimeMillis()
         if (now - lastPublishUptimeMs >= PUBLISH_INTERVAL_MS) {
             lastPublishUptimeMs = now
-            publish(running = true)
+            publish()
         }
     }
 
@@ -904,7 +1098,7 @@ internal class SpikeController @Inject constructor(
             lastEventLine = "${e.kind} ${e.detail}"
         }
         record(EventKind.RADIO, "${e.kind}: ${e.detail}", atMillis = e.atEpochMs)
-        publish(running = _stats.value.running)
+        publish()
     }
 
     private fun onAdvertiseState(state: AdvertiseState) {
@@ -913,7 +1107,7 @@ internal class SpikeController @Inject constructor(
             "advertiseState ${state.status} ${state.reason ?: ""} ${state.detail ?: ""} " +
                 "epoch=${state.epochIndex}",
         )
-        publish(running = _stats.value.running)
+        publish()
     }
 
     // -------------------------------------------------------------------------------------------
@@ -984,7 +1178,7 @@ internal class SpikeController @Inject constructor(
         atMillis: Long = System.currentTimeMillis(),
         toLogcat: Boolean = true,
     ) {
-        val w = writer ?: return
+        val w = synchronized(lock) { writer } ?: return
         val n = nextSeq()
         w.appendEventJson(
             "{\"seq\":$n,\"t\":$atMillis," +
@@ -1001,9 +1195,10 @@ internal class SpikeController @Inject constructor(
         atMs: Long,
         peerKey: String,
         resolvedSlot: String,
-        latencyMs: Long,
+        /** `null` for a row that is not an observation — a PEER_MISSED has no arrival to time. */
+        latencyMs: Long?,
     ) {
-        val w = writer ?: return
+        val w = synchronized(lock) { writer } ?: return
         val cfg = _config.value
         val seconds = atMs / 1000L
         synchronized(lock) { latencyRowsWritten++ }
@@ -1016,12 +1211,15 @@ internal class SpikeController @Inject constructor(
                 peerKey,
                 resolvedSlot,
                 atMs.toString(),
-                latencyMs.toString(),
-                (latencyMs > SpikeTiming.LATENCY_ON_MS).toString(),
+                // EMPTY, NEVER ZERO, for a miss. A zero in a latency column is an excellent
+                // measurement; the absence of a measurement is not a measurement at all, and the
+                // two must not share a representation in a file somebody will run a mean over.
+                latencyMs?.toString() ?: "",
+                (latencyMs != null && latencyMs > SpikeTiming.LATENCY_ON_MS).toString(),
                 // A packet cannot arrive before it was sent. A negative value is therefore
                 // model-free proof that this device's clock is behind the emitter's by at least
                 // this much — SpikeLatency.kt METHOD 4, the error bar that costs nothing.
-                (latencyMs < 0L).toString(),
+                (latencyMs != null && latencyMs < 0L).toString(),
                 cfg.duty.name,
                 SpikeTiming.scanModeName(SpikeTiming.effectiveScanMode(cfg)),
                 KeySchedule.dayIndex(seconds).toString(),
@@ -1030,8 +1228,36 @@ internal class SpikeController @Inject constructor(
         )
     }
 
+    /**
+     * One row per peer per cycle in which that peer was expected and produced nothing.
+     *
+     * IN THE FILE, not only in a counter, because a counter dies with the process and the file is
+     * the measurement. It also lets the analysis see WHERE the misses were: fifteen consecutive
+     * misses at minute 40 is a peer that left or a handset that died, and fifteen misses scattered
+     * over ninety minutes is an acquisition-rate problem. Those are different Phase 0 findings and
+     * a single integer cannot tell them apart.
+     */
+    private fun writeLatencyMissRow(miss: LatencyMiss) {
+        writeLatencyRow(
+            event = if (miss.departed) "PEER_DEPARTED" else "PEER_MISSED",
+            cycleStartMs = miss.cycleStartUtcMs,
+            atMs = miss.cycleStartUtcMs + SpikeTiming.LATENCY_CYCLE_MS,
+            peerKey = miss.peerKey,
+            resolvedSlot = miss.peerKey.removePrefix("slot:").takeIf {
+                miss.peerKey.startsWith("slot:")
+            } ?: "",
+            latencyMs = null,
+        )
+        record(
+            EventKind.CONTROL,
+            "latency cycle ${miss.cycleIndex}: peer ${miss.peerKey} NOT SEEN " +
+                "(consecutive=${miss.consecutiveMisses}${if (miss.departed) ", DEPARTED" else ""})",
+            toLogcat = false,
+        )
+    }
+
     private fun writeDensityBucket(bucket: DensityBucket) {
-        val w = writer ?: return
+        val w = synchronized(lock) { writer } ?: return
         val cfg = _config.value
         val scanMode = SpikeTiming.effectiveScanMode(cfg)
         val advInterval = SpikeTiming.nominalAdvertiseIntervalMs(cfg.duty)
@@ -1105,11 +1331,21 @@ internal class SpikeController @Inject constructor(
 
     private fun nextSeq(): Long = synchronized(lock) { ++seq }
 
-    private fun publish(running: Boolean) {
-        val w = writer
+    /**
+     * Republish the screen snapshot from the accumulators, under [lock].
+     *
+     * TAKES NO `running` PARAMETER, AND MUST NOT GROW ONE BACK. Every caller used to pass either a
+     * literal or `_stats.value.running` — a read of the previously published snapshot, from four
+     * different threads, outside the lock. That is a read-modify-write of the run state through a
+     * value type, and it lost races in the one direction that matters: a stale `false` written over
+     * a live run re-enables the Start button. [runningFlag] is the state; this is the view of it.
+     */
+    private fun publish() {
         synchronized(lock) {
+            val w = writer
             _stats.value = SpikeStats(
-                running = running,
+                running = runningFlag,
+                startFailure = startFailure,
                 runId = w?.runId ?: "-",
                 elapsedMillis = if (startedAtMillis == 0L) 0L else
                     System.currentTimeMillis() - startedAtMillis,
@@ -1140,6 +1376,7 @@ internal class SpikeController @Inject constructor(
                 radioAvailability = radio.availability.value.name,
                 peripheralRoleSupported = radio.peripheralRoleSupported,
                 diagnosticsDropped = radio.diagnosticsDropped,
+                radioEventsDropped = radio.eventsDropped,
                 writeFailures = w?.writeFailures ?: 0L,
                 lastEventLine = lastEventLine,
 
@@ -1184,6 +1421,9 @@ internal class SpikeController @Inject constructor(
                 latencyMaxMs = if (latency.totalSamples == 0L) null else latency.maxLatencyMs,
                 latencyAfterOnWindow = latency.afterOnWindow,
                 latencyMissedPeerCycles = latency.missedCycles,
+                latencyPeersDeparted = latency.peersDeparted,
+                latencyPeersExpected = latency.expectedPeers,
+                latencyCyclesClosed = latency.cyclesClosed,
                 emitStartLagMs = emitStartLagMs,
                 networkTimeAvailable = startClock?.networkTimeAvailable == true,
                 networkTimeSource = startClock?.source ?: "",
@@ -1236,6 +1476,19 @@ internal class SpikeController @Inject constructor(
          * scan-callback delivery delay and far smaller than a bucket.
          */
         private const val BUCKET_SETTLE_MS = 250L
+
+        /**
+         * How long [stop] waits for the four collectors to finish before giving up on them.
+         *
+         * Bounded because `stop()` is called from `Service.onDestroy`, and an unbounded wait there
+         * is an ANR — trading a lost row for a crash report would be a poor deal. Generous because
+         * the only work a collector can still be doing is a handful of buffered file writes, and
+         * the whole point of joining is to let them land. If the timeout is ever hit,
+         * `stop_collectors_joined=false` goes into `meta.json`: the capture then has an unknown
+         * number of rows written after the summary was computed, which is a fact about the file and
+         * not something to discover by counting lines six weeks later.
+         */
+        private const val STOP_JOIN_TIMEOUT_MS = 5_000L
 
         /**
          * `SPEC.md` §4.1. 0xFDA9 is PROVISIONAL and MUST NOT SHIP — SIG Adopter registration and a

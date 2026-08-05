@@ -71,7 +71,20 @@ internal class SpikeForegroundService : LifecycleService() {
             return START_NOT_STICKY
         }
 
-        controller.start()
+        // BELT AND BRACES OVER SpikeController.start's OWN HANDLING. start() turns a capture-file
+        // failure into a visible refusal rather than a throw, which is the case that actually
+        // happens (unmounted external storage, unwritable directory, full disk). This catches
+        // anything else: we are PAST startForeground here, so an escaping exception kills the
+        // process with the instrument's own notification on screen and no file to show for it.
+        // stopSelf() routes through onDestroy -> controller.stop(), which finalises whatever
+        // meta.json exists.
+        try {
+            controller.start()
+        } catch (error: Exception) {
+            Log.e(TAG, "SPIKE CONTROLLER FAILED TO START — this is a Phase 0 finding, record it", error)
+            stopSelf()
+            return START_NOT_STICKY
+        }
 
         // NOT START_STICKY. If an OEM battery manager kills this service, THAT IS THE MEASUREMENT.
         // Silently resurrecting would hide the exact behaviour mobile/android/docs/oem.md exists to

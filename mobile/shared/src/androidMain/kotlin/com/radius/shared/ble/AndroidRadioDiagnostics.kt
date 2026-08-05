@@ -135,6 +135,20 @@ public class AndroidRadioEvent(
          * WE made. Reported so that a gap in the capture is never silently attributed to the air.
          */
         DIAGNOSTIC_DROPPED,
+
+        /**
+         * A `ScanResult.timestampNanos` was unusable — zero, negative, or in the future — and the
+         * observation time was forced to callback time.
+         *
+         * A ZERO `timestampNanos` IS A KNOWN OEM DEFECT on the budget tier the device matrix tests
+         * first, and untreated it back-dates the sighting to near boot time. Emitted (rate-limited)
+         * rather than silently corrected because the correction changes what the row MEANS: on a
+         * clamped packet, `wall_utc_ms` is when we were told about it, not when it arrived, so
+         * discovery latency on that handset carries the callback delay inside it and cannot be
+         * separated out afterwards. A run with a non-zero count here has a timing caveat that must
+         * travel with its numbers.
+         */
+        TIMESTAMP_CLAMPED,
     }
 
     override fun toString(): String = "AndroidRadioEvent($kind, $atEpochMs, $detail)"

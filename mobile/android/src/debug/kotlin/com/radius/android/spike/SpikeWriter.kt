@@ -6,9 +6,11 @@ import android.util.Log
 import java.io.BufferedWriter
 import java.io.File
 import java.io.IOException
+import java.security.SecureRandom
 import java.text.SimpleDateFormat
 import java.util.Locale
 import java.util.TimeZone
+import java.util.concurrent.atomic.AtomicLong
 
 /**
  * The capture file. Append-only, on-device, `adb pull` and nothing else.
@@ -59,8 +61,36 @@ import java.util.TimeZone
  * If the radio saw the same advertiser twice in 4 ms, there are two rows. The analysis needs to see
  * what the radio saw, including the parts that look like noise, because "looks like noise" is a
  * conclusion and this file is evidence.
+ *
+ * ## Threading — THE LINE-INTEGRITY GUARANTEE IS A CONCURRENCY GUARANTEE
+ *
+ * This class is written from at least four threads: the diagnostics collector, the radio-event
+ * collector, the battery sampler, the density-bucket loop, and whichever thread called `stop()`.
+ * Every mutating method therefore takes [fileLock], and the counters are atomics.
+ *
+ * That is not tidiness, it is the file format. `BufferedWriter.appendLine` is `append(line)` then
+ * `newLine()` — TWO acquisitions of the writer's own internal monitor — so two unsynchronised
+ * threads interleave as `{"seq":41,…{"seq":42,…}\n}\n`. `events.jsonl` is documented above as
+ * line-oriented precisely so that an OEM kill leaves a VALID file up to the last flush, and a torn
+ * line breaks exactly that property: the analysis would find a corrupt record in a run whose
+ * headline finding is "the OEM killed us here", i.e. in the run that matters most.
+ *
+ * `written`/`writeFailures`/`sinceFlush` are atomics for a sharper reason than lost increments. A
+ * racy `write_failures` UNDER-reports, and under-reporting is the one direction that is not
+ * survivable: the instrument would describe itself as cleaner than it was, and `integrityNote`
+ * would print "no bridging observed" over a file with holes it does not know about.
+ *
+ * [fileLock] is a LEAF. Nothing inside this class calls back out, so it can be taken while holding
+ * no other lock or none at all, and the controller never acquires it while holding its own — the
+ * counter reads it does under its lock are atomic reads, which take nothing.
  */
 internal class SpikeWriter(context: Context, val runId: String) {
+
+    /**
+     * Guards every file handle and every write. See the threading note in the class KDoc: this is
+     * what makes one appended row exactly one line.
+     */
+    private val fileLock = Any()
 
     private val root: File =
         File(context.getExternalFilesDir(null) ?: context.filesDir, "spike/$runId")
@@ -80,11 +110,22 @@ internal class SpikeWriter(context: Context, val runId: String) {
     private var density: BufferedWriter? = null
     private var densityPeers: BufferedWriter? = null
 
-    private var sinceFlush = 0
-    var written: Long = 0L
-        private set
-    var writeFailures: Long = 0L
-        private set
+    private var closed = false
+
+    private val sinceFlush = AtomicLong(0L)
+    private val writtenCount = AtomicLong(0L)
+    private val writeFailureCount = AtomicLong(0L)
+    private val postCloseWrites = AtomicLong(0L)
+
+    val written: Long get() = writtenCount.get()
+
+    /**
+     * Rows this class was asked to write and could not. READ FROM OTHER THREADS WHILE THE RUN IS
+     * LIVE — the battery row, the density bucket and `meta.json` all carry it — so it is an atomic
+     * rather than a plain `Long`. An under-reported loss counter fails in the direction where the
+     * capture claims to be cleaner than it is.
+     */
+    val writeFailures: Long get() = writeFailureCount.get()
 
     /** Exactly what a human types at a laptop. Shown on screen so nobody has to guess. */
     val adbPullCommand: String
@@ -92,21 +133,41 @@ internal class SpikeWriter(context: Context, val runId: String) {
 
     val directory: String get() = root.absolutePath
 
+    /**
+     * Open every file for the run, or open none of them.
+     *
+     * THROWS, DELIBERATELY, AND THE CALLER MUST NOT ENTER A RUN IF IT DOES. External storage can be
+     * unmounted, the directory can be unwritable on a locked-down OEM build, and the disk can be
+     * full — all three are real, and a harness that half-opened its files and then scanned for
+     * ninety minutes would produce an unreadable artefact from a genuine capture. On failure the
+     * partially-opened handles are closed here so the throw does not also leak file descriptors,
+     * and [SpikeController.start] turns the exception into a visible refusal rather than a crash
+     * through `SpikeForegroundService.onStartCommand` — which by then has already called
+     * `startForeground`, so an escaping throw kills the instrument with a notification on screen.
+     */
     fun open(config: SpikeConfig, radioNotes: Map<String, String>) {
-        root.mkdirs()
-        events = eventsFile.bufferedWriter()
-        sightings = sightingsFile.bufferedWriter()
-        sightings?.appendLine(CSV_HEADER)
-        battery = batteryFile.bufferedWriter()
-        battery?.appendLine(BATTERY_CSV_HEADER)
-        latency = latencyFile.bufferedWriter()
-        latency?.appendLine(LATENCY_CSV_HEADER)
-        density = densityFile.bufferedWriter()
-        density?.appendLine(DENSITY_CSV_HEADER)
-        densityPeers = densityPeersFile.bufferedWriter()
-        densityPeers?.appendLine(DENSITY_PEERS_CSV_HEADER)
-        writeMeta(config, radioNotes)
-        Log.i(TAG, "spike run $runId -> ${root.absolutePath}")
+        synchronized(fileLock) {
+            check(!closed) { "SpikeWriter for run $runId has already been closed" }
+            try {
+                root.mkdirs()
+                events = eventsFile.bufferedWriter()
+                sightings = sightingsFile.bufferedWriter()
+                sightings?.appendLine(CSV_HEADER)
+                battery = batteryFile.bufferedWriter()
+                battery?.appendLine(BATTERY_CSV_HEADER)
+                latency = latencyFile.bufferedWriter()
+                latency?.appendLine(LATENCY_CSV_HEADER)
+                density = densityFile.bufferedWriter()
+                density?.appendLine(DENSITY_CSV_HEADER)
+                densityPeers = densityPeersFile.bufferedWriter()
+                densityPeers?.appendLine(DENSITY_PEERS_CSV_HEADER)
+                writeMeta(config, radioNotes)
+            } catch (error: Throwable) {
+                closeHandlesLocked()
+                throw error
+            }
+            Log.i(TAG, "spike run $runId -> ${root.absolutePath}")
+        }
     }
 
     private fun writeMeta(config: SpikeConfig, radioNotes: Map<String, String>) {
@@ -145,7 +206,7 @@ internal class SpikeWriter(context: Context, val runId: String) {
     }
 
     /** Update the header at the end of a run with the counters that only exist afterwards. */
-    fun closeMeta(summary: Map<String, String>) {
+    fun closeMeta(summary: Map<String, String>) = synchronized(fileLock) {
         try {
             val existing = metaFile.readText().trimEnd().removeSuffix("}").trimEnd().removeSuffix(",")
             val extra = summary.entries.joinToString(",\n  ") {
@@ -158,21 +219,27 @@ internal class SpikeWriter(context: Context, val runId: String) {
     }
 
     fun appendEventJson(line: String) {
-        try {
-            events?.appendLine(line)
-            written++
-            maybeFlush()
-        } catch (io: IOException) {
-            writeFailures++
+        synchronized(fileLock) {
+            val target = events ?: return refuseLocked("events.jsonl")
+            try {
+                target.appendLine(line)
+                writtenCount.incrementAndGet()
+                maybeFlushLocked()
+            } catch (io: IOException) {
+                writeFailureCount.incrementAndGet()
+            }
         }
     }
 
     fun appendSightingCsv(line: String) {
-        try {
-            sightings?.appendLine(line)
-            maybeFlush()
-        } catch (io: IOException) {
-            writeFailures++
+        synchronized(fileLock) {
+            val target = sightings ?: return refuseLocked("sightings.csv")
+            try {
+                target.appendLine(line)
+                maybeFlushLocked()
+            } catch (io: IOException) {
+                writeFailureCount.incrementAndGet()
+            }
         }
     }
 
@@ -184,34 +251,65 @@ internal class SpikeWriter(context: Context, val runId: String) {
      * process is a Phase 0 FINDING, and losing the last battery sample before the kill deletes the
      * evidence of the moment that matters most.
      */
-    fun appendBatteryCsv(line: String) = appendImmediate(battery, line)
+    fun appendBatteryCsv(line: String) = appendImmediate(line, "battery.csv") { battery }
 
-    fun appendLatencyCsv(line: String) = appendImmediate(latency, line)
+    fun appendLatencyCsv(line: String) = appendImmediate(line, "latency.csv") { latency }
 
-    fun appendDensityCsv(line: String) = appendImmediate(density, line)
+    fun appendDensityCsv(line: String) = appendImmediate(line, "density.csv") { density }
 
-    fun appendDensityPeerCsv(line: String) = appendImmediate(densityPeers, line)
+    fun appendDensityPeerCsv(line: String) =
+        appendImmediate(line, "density_peers.csv") { densityPeers }
 
-    private fun appendImmediate(target: BufferedWriter?, line: String) {
-        try {
-            target?.appendLine(line)
-            target?.flush()
-        } catch (io: IOException) {
-            writeFailures++
+    private inline fun appendImmediate(
+        line: String,
+        name: String,
+        target: () -> BufferedWriter?,
+    ) {
+        synchronized(fileLock) {
+            val writer = target() ?: return refuseLocked(name)
+            try {
+                writer.appendLine(line)
+                writer.flush()
+            } catch (io: IOException) {
+                writeFailureCount.incrementAndGet()
+            }
         }
     }
 
-    private fun maybeFlush() {
+    /**
+     * A row arrived for a file that is not open. Caller must hold [fileLock].
+     *
+     * COUNTED AS A WRITE FAILURE, not ignored. Before this existed the handles were nulled by
+     * [close] and every subsequent `target?.appendLine` was a SILENT no-op that still incremented
+     * `written` — so the last rows of a run vanished and the file's own loss counter said zero. The
+     * ordering fix is in `SpikeController.stop` (cancel AND JOIN the collectors before closing);
+     * this is the backstop that makes the residual case audible instead of invisible.
+     */
+    private fun refuseLocked(name: String) {
+        writeFailureCount.incrementAndGet()
+        val n = postCloseWrites.incrementAndGet()
+        if (n == 1L || n % 50L == 0L) {
+            Log.w(TAG, "WRITE AFTER CLOSE ($name) — row LOST, counted as a write failure. total=$n")
+        }
+    }
+
+    /** Caller must hold [fileLock]. */
+    private fun maybeFlushLocked() {
         // Flush often. An OEM power manager killing the process is one of the things being
         // measured, and a 30-second write buffer would delete the evidence of the event that
         // matters most.
-        if (++sinceFlush >= FLUSH_EVERY) {
-            sinceFlush = 0
-            flush()
+        if (sinceFlush.incrementAndGet() >= FLUSH_EVERY) {
+            sinceFlush.set(0L)
+            flushLocked()
         }
     }
 
     fun flush() {
+        synchronized(fileLock) { flushLocked() }
+    }
+
+    /** Caller must hold [fileLock]. */
+    private fun flushLocked() {
         runCatching { events?.flush() }
         runCatching { sightings?.flush() }
         runCatching { battery?.flush() }
@@ -221,7 +319,15 @@ internal class SpikeWriter(context: Context, val runId: String) {
     }
 
     fun close() {
-        flush()
+        synchronized(fileLock) {
+            closed = true
+            flushLocked()
+            closeHandlesLocked()
+        }
+    }
+
+    /** Caller must hold [fileLock]. Idempotent. */
+    private fun closeHandlesLocked() {
         runCatching { events?.close() }
         runCatching { sightings?.close() }
         runCatching { battery?.close() }
@@ -264,9 +370,15 @@ internal class SpikeWriter(context: Context, val runId: String) {
          * figure at all. `screen_interactive` deliberately does NOT clear it — a screen-on run is a
          * legitimate measurement of a different thing, and silently voiding it would hide that
          * choice instead of recording it.
+         *
+         * `elapsed_realtime_ms` IS THE DENOMINATOR. Divide by differences of that column, never by
+         * differences of `wall_utc_ms`: the wall clock is rewritten by an NTP re-sync and the
+         * monotonic clock is not. `wall_utc_ms − elapsed_realtime_ms` is constant across a clean run
+         * and steps exactly where the platform re-synced, which is how a re-sync becomes visible
+         * instead of becoming a wrong answer. See `SpikeBatterySample.elapsedRealtimeMs`.
          */
         val BATTERY_CSV_HEADER: String = listOf(
-            "sample", "wall_utc_ms", "iso_utc", "elapsed_ms",
+            "sample", "wall_utc_ms", "iso_utc", "elapsed_ms", "elapsed_realtime_ms",
             "level_pct", "raw_level", "scale",
             "charge_counter_uah", "current_now_ua_RAW_SIGN_UNVERIFIED", "energy_counter_nwh",
             "voltage_mv", "temperature_deci_c",
@@ -327,10 +439,24 @@ internal class SpikeWriter(context: Context, val runId: String) {
 
         fun isoUtc(millis: Long): String = synchronized(ISO) { ISO.format(millis) }
 
-        fun newRunId(): String =
-            SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US)
+        /**
+         * A run id that is unique even when two runs start in the same second.
+         *
+         * IT USED TO BE SECOND-RESOLUTION, and the run id IS the directory name. Two starts inside
+         * one second — a double tap, or a service restart racing the screen — produced the same
+         * path, and the second run's `bufferedWriter()` TRUNCATED the first run's files. The
+         * operator would have been left with one directory holding the tail of one capture and the
+         * head of another, with a `meta.json` describing whichever wrote last. Milliseconds plus 24
+         * bits of `SecureRandom` make that collision unreachable; the timestamp prefix stays first
+         * so the directory listing still sorts chronologically.
+         */
+        fun newRunId(): String {
+            val stamp = SimpleDateFormat("yyyyMMdd-HHmmss.SSS", Locale.US)
                 .apply { timeZone = TimeZone.getTimeZone("UTC") }
                 .format(System.currentTimeMillis())
+            val entropy = ByteArray(3).also { SecureRandom().nextBytes(it) }.toHex()
+            return "$stamp-$entropy"
+        }
 
         fun jsonString(value: String): String {
             val sb = StringBuilder(value.length + 2)

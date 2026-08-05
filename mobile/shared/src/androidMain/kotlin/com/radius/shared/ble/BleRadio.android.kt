@@ -71,8 +71,23 @@ import java.util.UUID
  *
  * ## Threading
  *
- * Commands are synchronous and serialised on [lock]. Platform callbacks arrive on binder threads
- * and only touch `tryEmit`/`StateFlow.value`, both thread-safe. Timers (epoch rotation, conserve
+ * Commands are synchronous and serialised on [lock].
+ *
+ * PLATFORM CALLBACKS ARRIVE ON BINDER THREADS AND DO MORE THAN `tryEmit`. This paragraph used to
+ * claim they only touched `tryEmit`/`StateFlow.value`, and that claim was false in two places that
+ * matter:
+ *
+ *  - [emit] READS [scanServiceUuid], which command threads write under [lock]. It is `@Volatile`
+ *    for exactly that reason. Without it a scan callback can see a stale `null` and return early
+ *    from its first line, which drops EVERY sighting — a silent, total, and entirely
+ *    self-inflicted blackout that looks identical to an empty room.
+ *  - `onScanFailed` TAKES [lock] on the registration-failure path.
+ *
+ * Everything else a callback touches is a `StateFlow.value` write or a `tryEmit`, both of which are
+ * thread-safe. The rule for anything added here later: a field read from a callback is either
+ * `@Volatile`, or read under [lock], or it is a bug that will present as "the radio saw nothing".
+ *
+ * Timers (epoch rotation, conserve
  * duty cycling, adapter recovery) run on [radioScope], which the radio owns and which
  * [shutdown] cancels. The radio creating its own scope is deliberate: it is a platform object with
  * an explicit lifecycle, it must keep running when no UI is collecting, and pushing a scope
@@ -189,6 +204,31 @@ public actual class BleRadio(
     public val diagnosticsDropped: Long
         get() = diagnosticsDroppedCount.get()
 
+    private val eventsDroppedCount = java.util.concurrent.atomic.AtomicLong(0L)
+
+    /**
+     * Radio LIFECYCLE events the radio produced and could not hand over.
+     *
+     * MUST be reported alongside any capture, and it is not interchangeable with
+     * [diagnosticsDropped]. A dropped sighting thins the data; a dropped `SCAN_STARTED`/
+     * `SCAN_STOPPED` pair leaves the duty ledger's scan interval unclosed and INFLATES
+     * `scan_on_ms`, which is the denominator the battery attribution divides by. Non-zero means a
+     * radio-time total in that run is wrong, not merely incomplete.
+     */
+    public val eventsDropped: Long
+        get() = eventsDroppedCount.get()
+
+    private val timestampClampCount = java.util.concurrent.atomic.AtomicLong(0L)
+
+    /**
+     * Scan results whose `timestampNanos` was unusable and whose observation time was forced to
+     * callback time. See [epochMillisOf] — non-zero means this handset fabricates scan timestamps,
+     * and every latency and density figure derived from those packets is quantised to the callback
+     * rather than the reception.
+     */
+    public val timestampsClamped: Long
+        get() = timestampClampCount.get()
+
     @Volatile
     private var scanModeOverride: Int? = null
 
@@ -224,6 +264,18 @@ public actual class BleRadio(
 
     private var advertiseCallback: AdvertiseCallback? = null
     private var scanCallback: ScanCallback? = null
+
+    /**
+     * `@Volatile` BECAUSE [emit] READS IT FROM A BINDER THREAD. Written under [lock] by command
+     * threads (`applyScanLocked`, `stopScanPlatformLocked`, `onAdapterLost`).
+     *
+     * This is not defensive typing. `emit` opens with `val uuid = scanServiceUuid ?: return`, so a
+     * scan thread that never sees the write publishing the new UUID discards every single scan
+     * result — no error, no callback, no counter, a capture file full of nothing that reads exactly
+     * like "there was nobody there". The failure mode is total and invisible, which is the pair of
+     * properties that makes it worth a keyword.
+     */
+    @Volatile
     private var scanServiceUuid: ParcelUuid? = null
     private var liveAdvertiseEpoch: Long = -1L
     private var isShutdown = false
@@ -307,7 +359,27 @@ public actual class BleRadio(
     // -----------------------------------------------------------------------------------------
 
     public actual fun setEpochBoundaryListener(listener: EpochBoundaryListener?) {
-        synchronized(lock) { epochBoundaryListener = listener }
+        synchronized(lock) {
+            // REGISTRATION AFTER SHUTDOWN IS REFUSED, not merely ineffective. The ticker would not
+            // start, so the old code looked harmless — but the reference was pinned for the life of
+            // the object, and that reference holds the KEY RING. That is precisely the retention
+            // ruling R-D made `shutdown()` null the listener to end; accepting a new one afterwards
+            // re-creates it through the front door.
+            if (isShutdown) {
+                Log.w(TAG, "setEpochBoundaryListener after shutdown — REFUSED, radio is dead")
+                return
+            }
+            epochBoundaryListener = listener
+            // MUST be here, not left to the caller's ordering. Registering a listener is now one of
+            // the two things that make the ticker wanted (EpochTickerPolicy), so the predicate has
+            // to be re-evaluated at the moment the input changes. Without this the corrected
+            // predicate is unreachable in the order that matters — register a listener, never start
+            // the radio, and no boundary is ever announced. It worked before only by the accident
+            // that SpikeController happens to register before calling startScan, and a predicate
+            // whose correctness depends on caller call-order is not a predicate. iOS already does
+            // this.
+            syncEpochTickerLocked()
+        }
     }
 
     public actual fun setAdvertiseRole(
@@ -516,16 +588,22 @@ public actual class BleRadio(
     /**
      * THE EPOCH TICKER. `KEY_SCHEDULE.md` §4.2 (RPA lever) and §8.5.2 (key destruction).
      *
-     * DEVICE-SCOPED, NOT ADVERTISING-SCOPED, and that distinction is a security property rather
-     * than tidiness. It runs whenever the radio is doing anything at all — scanning, advertising,
-     * or waiting for the adapter to come back. Two obligations hang off a boundary and only one of
-     * them is about advertising:
+     * RING-SCOPED, NOT RADIO-SCOPED, and that distinction is a security property rather than
+     * tidiness. IT RUNS WHENEVER ANYTHING HOLDS A RING OR WANTS TO ADVERTISE — which is not the
+     * same as "whenever the radio is doing anything", and the difference is not academic. Two
+     * obligations hang off a boundary and only one of them is about advertising:
      *
      *  - the advertising restart, which obviously only applies while advertising;
      *  - `KeyRing.pruneSupersededAt` via [EpochBoundaryListener], which applies to EVERY device
-     *    that holds a ring. Under decision 35 that is overwhelmingly scan-only devices, so a
-     *    ticker that only ran while advertising would leave the superseded keys alive on almost
-     *    the entire fleet. See the long note on [EpochBoundaryListener].
+     *    that holds a ring, whether or not its radio is doing anything at all. Under decision 35
+     *    that is overwhelmingly scan-only devices, so a ticker keyed to radio activity would leave
+     *    superseded keys alive on almost the entire fleet. See the long note on
+     *    [EpochBoundaryListener].
+     *
+     * SCANNING IS NOT ONE OF THE TWO. The predicate lives in [EpochTickerPolicy] together with the
+     * full argument for why `desiredScan` dropped out of it, why ghost mode must not be able to
+     * suspend key destruction, and the condition attached to the ruling about `delay` versus
+     * `AlarmManager`. Read that before changing this.
      *
      * It also keeps running while the adapter is off. Destruction is not radio work, and a device
      * sitting with Bluetooth disabled has no business retaining keys it was required to destroy.
@@ -539,7 +617,11 @@ public actual class BleRadio(
      * Caller must hold [lock].
      */
     private fun syncEpochTickerLocked() {
-        val wanted = !isShutdown && (desiredScan != null || desiredAdvertise != null)
+        val wanted = EpochTickerPolicy.wanted(
+            isShutdown = isShutdown,
+            advertising = desiredAdvertise != null,
+            hasEpochListener = epochBoundaryListener != null,
+        )
         if (!wanted) {
             epochJob?.cancel()
             epochJob = null
@@ -648,15 +730,34 @@ public actual class BleRadio(
             return BleOutcome.Rejected(BleOutcome.Reason.PERMISSION_DENIED, null)
         }
 
-        // Restarting an already-running scan costs a start from the platform budget for nothing.
-        stopScanPlatformLocked("restart")
-
+        // ================================================================================
+        // GATE FIRST. STOP SECOND. THE ORDER IS THE WHOLE POINT OF THE GATE.
+        // ================================================================================
+        //
+        // This used to stop the running scan and THEN ask permission to start a new one. When the
+        // gate refused — which is exactly when the budget is tight, i.e. when several mechanisms
+        // are already fighting over scan starts — we had killed a perfectly good scan and could not
+        // replace it for up to 30 seconds. The radio went blind, and it went blind in service of
+        // the control that exists to STOP it going blind. On a duty-cycled profile that is a
+        // half-minute hole in a capture, attributed to the air.
+        //
+        // Asking first costs nothing: a refusal now leaves the existing scan running, so the worst
+        // case is that the radio keeps scanning with the PREVIOUS settings until the retry lands.
+        // Stale settings beat no receiver, and the SCAN_THROTTLED event says which one happened.
         val waitMillis = scanStartGate.tryStart(nowMillis)
         if (waitMillis > 0L) {
-            event(AndroidRadioEvent.Kind.SCAN_THROTTLED, "wait=${waitMillis}ms")
+            event(
+                AndroidRadioEvent.Kind.SCAN_THROTTLED,
+                "wait=${waitMillis}ms existingScanLeftRunning=${scanCallback != null}",
+            )
             scheduleScanRetryLocked(waitMillis)
             return BleOutcome.Rejected(BleOutcome.Reason.THROTTLED, "$waitMillis")
         }
+
+        // Only now that a start is PERMITTED may the running scan be taken down. Restarting an
+        // already-running scan costs a start from the platform budget, which is why this is not
+        // done unconditionally further up.
+        stopScanPlatformLocked("restart")
 
         val parcelUuid = parcelUuidFrom16(request.serviceUuid16)
         scanServiceUuid = parcelUuid
@@ -963,10 +1064,59 @@ public actual class BleRadio(
      * properly matters: batched results can be several seconds old, and using
      * `currentTimeMillis()` at callback time would make a stale sighting look fresh and keep a
      * departed peer glued to the radar.
+     *
+     * ## BUT THE FIELD IS NOT TRUSTWORTHY, AND THE DEVICES WHERE IT LIES ARE THE FIRST ONES TESTED
+     *
+     * A `timestampNanos` of 0 is a known defect on budget chipsets — precisely the MediaTek tier
+     * `PHASE0_SPIKE_MATRIX.md` §2 puts in the FIRST batch. Trusting it computes an age of
+     * "everything since boot" and back-dates `observedAtEpochMs` to somewhere near the device's
+     * boot instant. The damage is not a wrong column; it is three wrong measurements at once:
+     *
+     *  - the latency cycle index goes backwards, so [LatencyCycle] attributes the sighting to a
+     *    cycle hours in the past and the sample is silently discarded or counted as enormous skew;
+     *  - the density bucket is wrong, so acquisition rate is mis-attributed to a bucket that has
+     *    long since been written;
+     *  - `wall_utc_ms` in the capture file is wrong, which is unrecoverable in analysis because
+     *    nothing else in the row disagrees with it.
+     *
+     * So the age is bounded, and — decisively — A CLAMP IS AN EVENT. It goes into the capture with
+     * everything else, rate-limited the same way a dropped diagnostic is, because a run on a
+     * handset whose scan timestamps are fabricated is a run whose timing conclusions are void, and
+     * that has to be discoverable from the file rather than from knowing which handset it was.
      */
     private fun epochMillisOf(result: ScanResult): Long {
-        val ageMillis = (SystemClock.elapsedRealtimeNanos() - result.timestampNanos) / 1_000_000L
-        return System.currentTimeMillis() - ageMillis
+        val nowMillis = System.currentTimeMillis()
+        val nowNanos = SystemClock.elapsedRealtimeNanos()
+        val stamp = result.timestampNanos
+
+        // <= 0 is the OEM defect. > now is impossible on a monotonic clock and means the same thing:
+        // whatever this field holds, it is not an elapsed-realtime reading.
+        if (stamp <= 0L || stamp > nowNanos) {
+            noteTimestampClamp("out-of-range timestampNanos=$stamp")
+            return nowMillis
+        }
+
+        val ageMillis = (nowNanos - stamp) / 1_000_000L
+        if (ageMillis > MAX_SCAN_RESULT_AGE_MS) {
+            noteTimestampClamp("age=${ageMillis}ms exceeds ${MAX_SCAN_RESULT_AGE_MS}ms")
+            return nowMillis
+        }
+        return nowMillis - ageMillis
+    }
+
+    /**
+     * Record that a scan timestamp was not usable. Rate-limited like [diagnosticsDropped]: on a
+     * defective handset EVERY packet clamps, and an event per packet would swamp the SUSPEND-policy
+     * event flow and starve the thing it is reporting on.
+     */
+    private fun noteTimestampClamp(detail: String) {
+        val n = timestampClampCount.incrementAndGet()
+        if (n == 1L || n % 100L == 0L) {
+            event(
+                AndroidRadioEvent.Kind.TIMESTAMP_CLAMPED,
+                "$detail — observedAt forced to callback time. total=$n",
+            )
+        }
     }
 
     private fun refreshAvailability() {
@@ -1001,10 +1151,29 @@ public actual class BleRadio(
         )
     }
 
+    /**
+     * Publish a radio lifecycle event, AND COUNT IT IF IT DOES NOT FIT.
+     *
+     * The diagnostics stream next door has counted its own drops since it was written, and this one
+     * discarded `tryEmit`'s return value — which is the worse of the two omissions. A dropped
+     * SIGHTING costs one row out of thousands. A dropped `SCAN_STOPPED` leaves `SpikeDutyLedger`
+     * with a scan interval that is never closed, so `scan_on_ms` keeps accumulating for a receiver
+     * that is off — and `scan_on_ms` is the denominator that turns whole-device drain into an
+     * attributable %/hr. One lost event silently corrupts the P1 number rather than thinning the
+     * data.
+     *
+     * The loss cannot be reported through this same flow — the report would be dropped by the
+     * condition it is reporting — so it goes to logcat and to [eventsDropped], which the harness
+     * writes into `meta.json` and shows on screen.
+     */
     private fun event(kind: AndroidRadioEvent.Kind, detail: String) {
-        _androidEvents.tryEmit(
+        val accepted = _androidEvents.tryEmit(
             AndroidRadioEvent(kind, System.currentTimeMillis(), detail),
         )
+        if (!accepted) {
+            val n = eventsDroppedCount.incrementAndGet()
+            Log.w(TAG, "RADIO EVENT DROPPED ($kind: $detail) — scan_on_ms may be wrong. total=$n")
+        }
     }
 
     private fun hasScanPermission(): Boolean =
@@ -1107,6 +1276,19 @@ public actual class BleRadio(
          */
         const val CONSERVE_ON_MS = 20_000L
         const val CONSERVE_OFF_MS = 100_000L
+
+        /**
+         * UNMEASURED GUESS. The oldest a `ScanResult` may claim to be before its timestamp is
+         * treated as broken rather than as an old packet. See [epochMillisOf].
+         *
+         * We request `setReportDelay(0)`, so nothing should be more than a scan window old — but
+         * "should" is doing the work in that sentence and the whole point of the clamp is that this
+         * field lies on some hardware. 60 s is deliberately far above any legitimate delivery delay
+         * and far below "since boot", which is what the OEM zero-timestamp defect actually yields.
+         * Widening it does not make the instrument more permissive of real data; it only lets more
+         * fabricated timestamps through.
+         */
+        const val MAX_SCAN_RESULT_AGE_MS = 60_000L
 
         const val TX_POWER_NOT_PRESENT = 127
 

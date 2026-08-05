@@ -6,6 +6,7 @@ import android.content.IntentFilter
 import android.os.BatteryManager
 import android.os.Build
 import android.os.PowerManager
+import android.os.SystemClock
 
 /**
  * BATTERY SAMPLING — go/no-go **P1** (`<4 %/hr scanning`, `<1 %/day idle`).
@@ -100,6 +101,9 @@ internal class SpikeBatteryReader(context: Context) {
 
         return SpikeBatterySample(
             wallUtcMs = System.currentTimeMillis(),
+            // THE DENOMINATOR. Taken in the same breath as the wall clock and recorded beside it,
+            // never derived from it. See the KDoc on SpikeBatterySample.elapsedRealtimeMs.
+            elapsedRealtimeMs = SystemClock.elapsedRealtime(),
             levelPct = longProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY).toInt()
                 .takeIf { it in 0..100 }
                 ?: if (level >= 0 && scale > 0) level * 100 / scale else -1,
@@ -152,6 +156,27 @@ internal class SpikeBatteryReader(context: Context) {
  */
 internal data class SpikeBatterySample(
     val wallUtcMs: Long,
+    /**
+     * `SystemClock.elapsedRealtime()` AT THE SAME INSTANT AS [wallUtcMs], and the ONLY clock any
+     * %/hr figure may be divided by.
+     *
+     * `SpikeDutyLedger` already integrates radio time on this clock and states why in its class
+     * KDoc: wall clock jumps when the platform re-syncs NTP, and a jump in the middle of a 90-minute
+     * capture silently rewrites the denominator of every %/hr figure in the run. The drain estimator
+     * used to divide by `wallUtcMs` deltas, which meant the numerator (charge) and the denominator
+     * (time) were measured against two different notions of time, one of which is not monotonic.
+     *
+     * It is recorded in the CSV as well as used on-device BECAUSE THE ERROR IS OTHERWISE
+     * UNRECOVERABLE IN ANALYSIS. A sample carrying only a wall clock gives an off-device reader no
+     * way to notice a re-sync, let alone correct for it: the row simply says the run was four
+     * minutes shorter than it was. With both clocks in the file, `wall_utc_ms` minus
+     * `elapsed_realtime_ms` is constant across a clean run and steps exactly where the platform
+     * re-synced — so the anomaly is visible without being asked about.
+     *
+     * It also keeps counting through deep sleep, which is exactly what an idle-drain measurement
+     * needs and what `uptimeMillis` would not give.
+     */
+    val elapsedRealtimeMs: Long,
     val levelPct: Int,
     val rawLevel: Int,
     val scale: Int,
@@ -234,11 +259,39 @@ internal class BatteryDrainEstimator {
 
     val latestSample: SpikeBatterySample? get() = latest
 
+    /**
+     * MONOTONIC, and this is the denominator of every %/hr figure this class produces.
+     *
+     * NOT `wallUtcMs` deltas. An NTP re-sync mid-capture moves the wall clock by an arbitrary amount
+     * in an arbitrary direction, and dividing a charge delta by a wall-clock delta silently rewrites
+     * the rate for the whole run — a 4 %/hr result becomes 4.4 %/hr, or 3.6 %/hr, with nothing
+     * anywhere indicating that anything happened. `SpikeDutyLedger` makes the same argument for the
+     * radio-time numerator; the two have to be on the same clock or the ratio is not a ratio.
+     *
+     * `coerceAtLeast(0)` is a belt-and-braces assertion rather than a fix: `elapsedRealtime` cannot
+     * go backwards, so a negative here would mean the samples arrived out of order, and a zero
+     * denominator is caught by the [SpikeTiming.BATTERY_MIN_PROJECTION_MS] guard above every use.
+     */
     val elapsedMs: Long
         get() {
             val a = first ?: return 0L
             val b = latest ?: return 0L
-            return b.wallUtcMs - a.wallUtcMs
+            return (b.elapsedRealtimeMs - a.elapsedRealtimeMs).coerceAtLeast(0L)
+        }
+
+    /**
+     * How far this run's wall clock moved RELATIVE to the monotonic clock, milliseconds.
+     *
+     * Zero on a clean run. Non-zero means the platform re-synced (or a user set the clock) mid
+     * capture, which is a fact about the run that the analysis needs — every cross-device latency
+     * number in `latency.csv` is on the wall clock, and a step in it lands inside the measurement.
+     * Written into the run summary; never silently corrected for.
+     */
+    val wallClockStepMs: Long
+        get() {
+            val a = first ?: return 0L
+            val b = latest ?: return 0L
+            return (b.wallUtcMs - a.wallUtcMs) - (b.elapsedRealtimeMs - a.elapsedRealtimeMs)
         }
 
     val levelDeltaPct: Int

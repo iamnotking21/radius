@@ -124,6 +124,32 @@ These apply everywhere and are not worked around, only respected:
    5-per-30s budget and fails anyway. `BleRadio.ADAPTER_SETTLE_MS` is currently 1500 ms and that
    number is a GUESS — measuring the real per-OEM settle time is a spike row.
 
+9. **`ScanResult.timestampNanos` is not trustworthy on the budget tier, and a zero there corrupts
+   three measurements at once.** The field is documented as elapsed-realtime since boot. Several
+   budget chipsets — disproportionately the MediaTek devices `PHASE0_SPIKE_MATRIX.md` §2 puts in
+   the FIRST batch — report `0`.
+
+   Taken at face value that computes an age of "everything since boot" and back-dates the sighting
+   to near the boot instant. The damage is not one wrong column:
+
+   - the latency cycle index goes backwards, so the sample is attributed to a cycle hours in the
+     past and either discarded or counted as enormous clock skew;
+   - the density bucket is wrong, so acquisition rate lands in a bucket that was written long ago;
+   - `wall_utc_ms` in `sightings.csv` is wrong, and nothing else in the row disagrees with it, so
+     the error is unrecoverable in analysis.
+
+   `BleRadio.epochMillisOf` therefore clamps: a timestamp that is `<= 0`, in the future, or older
+   than `MAX_SCAN_RESULT_AGE_MS` (60 s) falls back to callback time. **The clamp emits a
+   `TIMESTAMP_CLAMPED` radio event** (rate-limited, 1st and every 100th) so it appears in the
+   capture — a run on a handset that fabricates scan timestamps has a timing caveat that must
+   travel with its numbers, and that has to be discoverable from the file rather than from
+   remembering which phone it was.
+
+   **Record the model in the per-vendor section above when you see it.** A non-zero
+   `TIMESTAMP_CLAMPED` count means discovery latency on that handset includes the callback delivery
+   delay and cannot be separated from it — P2 percentiles from that device are an upper bound, not
+   a measurement.
+
 ---
 
 ## Required test matrix before any Phase 0 GO
@@ -169,8 +195,25 @@ different controller.
    use a compressed test epoch** — the question includes the interaction between our boundary and
    the controller's own ~900 s RPA timer, and shortening our period changes the thing being
    measured.
-7. Pull the directory and check `meta.json` first: `diagnostics_dropped` and `write_failures` must
-   be 0, or the capture's absence claims are void.
+7. Pull the directory and check `meta.json` FIRST, before any number in it. These are the fields
+   that decide whether the rest of the file may be quoted at all:
+
+   | Field | Must be | If it is not |
+   |---|---|---|
+   | `diagnostics_dropped` | 0 | records we lost. Absence claims (B8, §5.0) are void. |
+   | `radio_events_dropped` | 0 | a lifecycle event was lost. A missing `SCAN_STOPPED` leaves the duty ledger's interval open and **inflates `scan_on_ms`**, so the battery attribution is wrong, not merely gappy. |
+   | `write_failures` | 0 | rows never reached the disk. |
+   | `stop_collectors_joined` | `true` | rows may have been written after the summary was computed; the counters in `meta.json` are then a lower bound. |
+   | `wall_clock_step_ms` | 0 | the platform re-synced mid-run. `%/hr` is unaffected (it divides by `elapsed_realtime_ms`), but every `latency_ms` in `latency.csv` is on the wall clock and IS affected. |
+   | `latency_unaccounted_cycles` | 0 | the harness was not running for that many latency cycles — Doze or an OEM kill. Not a peer failure, and on a battery-manager run it is the finding. |
+
+8. For a latency run, read `latency_missed_peer_cycles` and `latency_peers_departed` TOGETHER
+   before reading `p50`. A clean p50 over a run where the peer departed at minute 10 is a
+   percentile over ten minutes, not over the run — the miss and departure counters are what make
+   that visible, and they are timer-driven so a total blackout still counts.
+
+9. Divide battery figures by `elapsed_realtime_ms`, never by `wall_utc_ms`. Both columns are in
+   `battery.csv` for the express purpose of making a clock re-sync visible as a step between them.
 
 **What the on-screen bijection counters are and are not.** The harness shows, live, "addresses seen
 with >1 eid" and "eids seen with >1 address" — the §4.3.1 bijection, computed from what this phone's

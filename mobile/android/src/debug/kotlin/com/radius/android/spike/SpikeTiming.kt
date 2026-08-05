@@ -101,6 +101,25 @@ internal object SpikeTiming {
     const val LATENCY_SKEW_ATTRIBUTION_MS = 10_000L
 
     /**
+     * UNMEASURED GUESS. Consecutive missed cycles after which a peer is recorded as DEPARTED and
+     * stops accruing misses.
+     *
+     * It exists because the alternative is worse in a specific direction. Without it, "expected"
+     * only ever grows: a peer that walks out of range at minute 20 of a 90-minute run keeps being
+     * counted missing for the remaining 70 cycles, and one departure manufactures seventy failures.
+     * With it, a genuine dead peer costs 3 misses and one DEPARTED row, and a peer that is merely
+     * hard to hear re-joins the expected set the moment it is heard again.
+     *
+     * 3 is a guess and it is the wrong kind of number to guess: too low and an intermittent peer is
+     * repeatedly declared dead and resurrected, inflating `peers_departed`; too high and a real
+     * departure keeps inventing misses for longer. Both symptoms are visible in the file
+     * (`PEER_DEPARTED` row count against `PEER_MISSED` run lengths), which is how the right value
+     * gets found. Three cycles is three minutes at [LATENCY_CYCLE_MS] — long enough that a peer
+     * surviving one bad scan window is not written off.
+     */
+    const val LATENCY_PEER_DEPARTURE_MISSES = 3
+
+    /**
      * UNMEASURED GUESS. Cap on latency samples held in memory for the on-screen percentile.
      *
      * The FILE is never sampled or capped. This bounds only the live readout, because an unbounded
@@ -191,6 +210,7 @@ internal object SpikeTiming {
         "timing_latency_cycle_ms" to LATENCY_CYCLE_MS.toString(),
         "timing_latency_on_ms" to LATENCY_ON_MS.toString(),
         "timing_latency_skew_attribution_ms" to LATENCY_SKEW_ATTRIBUTION_MS.toString(),
+        "timing_latency_peer_departure_misses" to LATENCY_PEER_DEPARTURE_MISSES.toString(),
         "timing_density_bucket_ms" to DENSITY_BUCKET_MS.toString(),
         "timing_peer_liveness_ms" to PEER_LIVENESS_MS.toString(),
         "nominal_adv_interval_fg_ms" to NOMINAL_ADV_INTERVAL_FOREGROUND_MS.toString(),
