@@ -55,7 +55,15 @@ Every row is **DESIGN**. `backend/` contains one file — a memory document. The
 | **G2** | ~~No merged-manifest permission gate~~ **CLOSED 2026-08-05** | `permission_gate.sh`, 10 assertions, reads real AGP output for both variants against a 9-item allowlist. `INTERNET`'s failure message names **Privacy §3b bound 1 and register row A4** by name, so whoever adds it learns what they invalidated. Found a real extra entry by reading the live manifest instead of trusting the requested list: AndroidX injects `<applicationId>.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION` — signature-protected, self-scoped, zero capability — now allowlisted by pattern with the reasoning inline. **Wiring owed** — see below. |
 | **G3** | ~~Invariant-1 gate scans `mobile/` only~~ **CLOSED 2026-08-05** | Widened to `backend/` (`.go`/`.sql`/`.proto`) and `website/` (`.ts`/`.tsx`/`.js`/`.jsx`), same pattern list, `geohash5` still allowed and coordinates still banned. 17 assertions; the 6 pre-existing mobile ones pass unmodified. Needed **no** runner change — the stage already calls the script with default args. Caught in testing: the bare-identifier patterns were case-sensitive, which is invisible in Kotlin/Swift lowerCamelCase but misses Go's idiomatic exported `Latitude float64` entirely. |
 
-### Wiring still owed (devops-tencent)
+### Wiring — DONE, and observed green 2026-08-05
+
+Both gates are wired into all four workflow files and **ran in CI run 6, both passing.** G1 sits in `fast-gates`; G2 runs in the android job behind a `build-manifests` stage that calls AGP's manifest-merge-only tasks (18 actionable tasks vs 86 for a full release build).
+
+`build-manifests` is deliberately a **separate stage** from `gate-permission`: an AGP failure must report as a build failure, never as a permission violation. A permission-gate failure is the one message in this repo that should make someone stop and read a privacy paragraph, and diluting it would be expensive.
+
+**These claims are now enforced, not merely written down.** The distinction below is kept because it applies to every future row.
+
+### Original wiring note (retained — this is the failure mode the register exists to catch)
 
 `gate-rssi-egress` slots into `fast-gates` with no complications.
 
