@@ -61,6 +61,9 @@ jobs:
         run: bash devops/ci/runner/run-stage.sh gate-internal-escape
       - if: ${{ !cancelled() }}
         run: bash devops/ci/runner/run-stage.sh gate-the-line
+      - name: "G1 / A2 — raw RSSI must not leave the device"
+        if: ${{ !cancelled() }}
+        run: bash devops/ci/runner/run-stage.sh gate-rssi-egress
 
   battery-gate:
     name: "battery gate (STRICT — expected RED, no hardware rig)"
@@ -117,6 +120,16 @@ jobs:
       - if: ${{ !cancelled() }}
         shell: bash
         run: bash devops/ci/runner/run-stage.sh build-assemble-debug
+      # Pair — see .github/workflows/ci.yml `android` job. Kept here too rather than relying on the
+      # release-uuid-gate job's assembleRelease: that runs on a DIFFERENT runner with a different
+      # workspace, so its release manifest is not visible to this job. A gate that reads the
+      # filesystem must be wired next to whatever writes it, every time.
+      - if: ${{ !cancelled() }}
+        shell: bash
+        run: bash devops/ci/runner/run-stage.sh build-manifests
+      - if: ${{ !cancelled() }}
+        shell: bash
+        run: bash devops/ci/runner/run-stage.sh gate-permission
       - if: ${{ !cancelled() }}
         shell: bash
         run: bash devops/ci/runner/run-stage.sh gate-conformance

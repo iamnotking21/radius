@@ -77,6 +77,14 @@ jobs:
         if: ${{ !cancelled() }}
         run: bash devops/ci/runner/run-stage.sh gate-the-line
 
+      # CLAIMS_REGISTER G1 / row A2. Backs the privacy claim that raw RSSI never leaves the device:
+      # no log call, string interpolation, .sq column or @Serializable/@ProtoNumber field may carry
+      # it. src/debug is excluded by design — the spike harness writes RSSI locally to a device with
+      # no network permission, which is the gate below this one's job to keep true.
+      - name: "G1 / A2 — raw RSSI must not leave the device"
+        if: ${{ !cancelled() }}
+        run: bash devops/ci/runner/run-stage.sh gate-rssi-egress
+
   # ================================================================================================
   # KNOWN-RED GATES — run, report loudly, do NOT block the ordinary path.
   #
@@ -164,6 +172,27 @@ jobs:
         if: ${{ !cancelled() }}
         shell: bash
         run: bash devops/ci/runner/run-stage.sh build-assemble-debug
+
+      # ---- CLAIMS_REGISTER G2 / row A4, decision 50 ----------------------------------------------
+      # These two steps are a PAIR and must stay adjacent, in this order, in this job. The gate reads
+      # merged manifests for BOTH variants out of the workspace; the stage above it is what produces
+      # them. Manifest-merge only — no compile, no R8, no signing, no release build on the push path.
+      # Rationale and the measured task counts are in run-stage.sh's `build-manifests` case.
+      #
+      # This is the only thing standing behind PRIVACY_POLICY_DRAFT.md §3b bound 1 — that the app is
+      # structurally incapable of uploading anything because it requests no network permission. That
+      # sentence is true today. INTERNET is expected to land eventually for the API client, and this
+      # gate does not exist to prevent that; it exists so it cannot happen SILENTLY. Its failure
+      # message names the policy paragraph and register row that go false, in the same PR.
+      - name: "merged manifests, both variants (input to the permission gate)"
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: bash devops/ci/runner/run-stage.sh build-manifests
+
+      - name: "G2 / A4 — merged-manifest permission allowlist (decision 50)"
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: bash devops/ci/runner/run-stage.sh gate-permission
 
       # THE MOAT GATE. Phase 1 = manifest pre-check (node). Phase 2 = the BLE codec actually run
       # against every conformance vector, count reported live, never hardcoded.

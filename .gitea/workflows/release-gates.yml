@@ -39,6 +39,9 @@ jobs:
         run: bash devops/ci/runner/run-stage.sh gate-internal-escape
       - if: ${{ !cancelled() }}
         run: bash devops/ci/runner/run-stage.sh gate-the-line
+      - name: "G1 / A2 — raw RSSI must not leave the device"
+        if: ${{ !cancelled() }}
+        run: bash devops/ci/runner/run-stage.sh gate-rssi-egress
 
   battery-gate:
     name: "battery gate (STRICT — expected RED, no hardware rig)"
@@ -74,6 +77,12 @@ jobs:
         run: bash devops/ci/runner/run-stage.sh build-lint
       - if: ${{ !cancelled() }}
         run: bash devops/ci/runner/run-stage.sh build-assemble-debug
+      # Pair — see .gitea/workflows/ci.yml. Kept here rather than relying on the release-uuid-gate
+      # job's assembleRelease: different job, different workspace, manifests not visible.
+      - if: ${{ !cancelled() }}
+        run: bash devops/ci/runner/run-stage.sh build-manifests
+      - if: ${{ !cancelled() }}
+        run: bash devops/ci/runner/run-stage.sh gate-permission
       - if: ${{ !cancelled() }}
         run: bash devops/ci/runner/run-stage.sh gate-conformance
 

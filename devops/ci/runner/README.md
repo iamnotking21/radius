@@ -95,8 +95,10 @@ On the push path `run-stage.sh` **asserts the expected state** rather than swall
   outlives its cause silently absorbs the next *real* reintroduction of `0xFDA9`, which is the
   precise disaster the gate exists to prevent.
 
-This cannot hide a broken gate script: `gate-selftests` runs qa-test's 39-assertion self-test suite
-against synthetic fixtures, fully blocking, on every path.
+This cannot hide a broken gate script: `gate-selftests` runs qa-test's full self-test suite against
+synthetic fixtures, fully blocking, on every path. (Deliberately not quoting the assertion count —
+it went 39 → 45 → 80 in two days. `run_all.sh` prints the live number every run; that is the
+authority, per `devops/ci/README.md` design principle 9.)
 
 `release-gates.yml` **is expected to fail today.** Do not "fix" it. It is the mechanical statement
 that Radius cannot ship, made at the only moment where that statement is actionable.
@@ -132,7 +134,35 @@ bash devops/ci/runner/run-stage.sh --list          # stage table + which stages 
 bash devops/ci/runner/run-stage.sh gate-selftests
 bash devops/ci/runner/run-stage.sh gate-conformance
 RADIUS_CI_STRICT=1 bash devops/ci/runner/run-stage.sh gate-battery   # what release will do
+
+# the permission gate reads build output, so its producer must run first (CI does this as the
+# step immediately above it). Cheap — manifest merge only, no compile, no R8.
+bash devops/ci/runner/run-stage.sh build-manifests
+bash devops/ci/runner/run-stage.sh gate-permission
 ```
+
+### Stage pairs — stages that are not independently runnable
+
+Almost every stage stands alone. Two do not, and both read build output written by the stage before
+them **in the same job and workspace**:
+
+| gate | producer that must run first | why not folded together |
+|---|---|---|
+| `gate-permission` | `build-manifests` | a Gradle/AGP failure must report as a BUILD failure, never as a permission violation (§5b attribution) |
+| `gate-release-uuid-artifact` | `build-assemble-release` | same reasoning; release-only, so it is not on the push path at all |
+
+`gate-permission` prints a runner-side wiring note when its input is absent — *before* running the
+gate, never instead of it, so it can only add information and never produce a verdict of its own.
+A missing manifest must never be able to read as "the permission check passed"; the gate itself
+fails closed on a missing variant, which is qa-test's design and the right one.
+
+**Why `build-manifests` and not `assembleRelease`.** The permission gate needs the merged manifest
+for *both* variants, and the push path only builds debug. Running a full release build on every push
+to obtain a 4 KB XML file would put R8 on the critical path for a check that takes milliseconds.
+`processDebugManifestForPackage` / `processReleaseManifestForPackage` are AGP's manifest-merge-only
+tasks and are literally the producers — the output directory is named after the task
+(`packaged_manifests/debug/processDebugManifestForPackage/`). Measured on the dev box: **18
+actionable tasks vs 86 for `assembleRelease`**, no compile, no dex, no R8, no signing.
 
 On the Windows dev machine, export the toolchain first — the shell does not inherit it:
 
@@ -150,7 +180,7 @@ Windows-only entrypoint, which forced the GitHub `android` job onto `windows-lat
 minutes and made the Gitea conformance stage unrunnable. qa-test replaced it with
 `qa_gradle_wrapper()` in `devops/ci/gates/lib/common.sh` — same `uname -s` rule as
 `run-stage.sh`'s `gradle_wrapper()`, reused rather than reinvented, with `test_gradle_wrapper.sh`
-covering every branch (self-test suite 39 → 45 assertions). Both GitHub jobs are now
+covering every branch. Both GitHub jobs are now
 `ubuntu-latest`. The tripwire in `run-stage.sh`'s `gate-conformance` case retired itself the moment
 the literal left that file, and is kept, dormant, so a reintroduction re-arms it automatically.
 

@@ -94,7 +94,7 @@ summary() {
 #   They will block. We cannot ship today and CI should say so in the loudest available way at the
 #   only moment where saying so is actionable.
 #
-# THIS TOLERANCE CANNOT HIDE A BROKEN GATE SCRIPT: `gate-selftests` runs qa-test's own 39-assertion
+# THIS TOLERANCE CANNOT HIDE A BROKEN GATE SCRIPT: `gate-selftests` runs qa-test's own full
 # self-test suite against synthetic fixtures, it is fully blocking on every path, and it is what
 # proves these scripts still detect what they claim to detect.
 #
@@ -157,6 +157,8 @@ run_stage() {
       bash devops/ci/gates/internal_escape_gate.sh ;;
     gate-the-line)
       bash devops/ci/gates/the_line_gate.sh ;;
+    gate-rssi-egress)
+      bash devops/ci/gates/rssi_egress_gate.sh ;;
     gate-release-uuid-source)
       bash devops/ci/gates/release_uuid_gate.sh --skip-artifact ;;
 
@@ -178,6 +180,42 @@ run_stage() {
     build-assemble-release)
       require_android_toolchain; gw="$(gradle_wrapper)"
       ( cd mobile && "$gw" :android:assembleRelease --no-daemon ) ;;
+
+    # MERGED MANIFESTS, BOTH VARIANTS, WITHOUT BUILDING EITHER APP.
+    #
+    # permission_gate.sh (decision 50, CLAIMS_REGISTER G2) reads
+    # build/intermediates/packaged_manifests/{debug,release}/**/AndroidManifest.xml and needs BOTH
+    # present in the SAME workspace. The obvious wiring — make the push path run assembleRelease —
+    # is the wrong one: it puts R8 on every push to obtain a 4 KB XML file.
+    #
+    # These are AGP's manifest-merge-only tasks, and they are literally the producers: the output
+    # directory is named after the task (`packaged_manifests/debug/processDebugManifestForPackage/`).
+    # No Kotlin compile, no dex, no R8, no signing. MEASURED on this machine: 18 actionable tasks vs
+    # 86 for assembleRelease.
+    #
+    # Kept as its OWN stage rather than folded into gate-permission so that a Gradle/AGP failure is
+    # reported as a BUILD failure, not as a permission violation — same attribution discipline as
+    # README §5b. A missing manifest must never be able to read as "the permission check passed".
+    build-manifests)
+      require_android_toolchain; gw="$(gradle_wrapper)"
+      ( cd mobile && "$gw" :android:processDebugManifestForPackage \
+                           :android:processReleaseManifestForPackage --no-daemon ) ;;
+
+    # DECISION 50 / CLAIMS_REGISTER G2. Backs PRIVACY_POLICY_DRAFT.md §3b bound 1 ("the app is
+    # incapable of uploading anything — it requests no network permission") and register row A4.
+    # The gate is not there to stop INTERNET landing; it is there so it cannot land SILENTLY.
+    gate-permission)
+      # Runner-side context only. The gate's own missing-variant message is already good and tells
+      # you to build; what it cannot know is which CI STAGE produces its input. Printed BEFORE the
+      # gate runs and never in place of it, so this can only ever add information, never a verdict.
+      if [[ ! -d mobile/android/build/intermediates/packaged_manifests/debug ]] \
+         || [[ ! -d mobile/android/build/intermediates/packaged_manifests/release ]]; then
+        err "WIRING NOTE (runner): one or both merged manifests are absent from this workspace."
+        err "In CI they are produced by the 'build-manifests' stage, which must run in the SAME JOB"
+        err "immediately before this one. If that step is missing from the workflow, this is a"
+        err "WIRING bug, not a permission violation. The gate's own message follows."
+      fi
+      bash devops/ci/gates/permission_gate.sh ;;
 
     # -- conformance: needs node (phase 1) + JDK/SDK (phase 2, authoritative) ---------------------
     gate-conformance)
@@ -215,9 +253,10 @@ run_stage() {
   esac
 }
 
-STAGES="gate-selftests gate-no-map-no-bearing gate-internal-escape gate-the-line
+STAGES="gate-selftests gate-no-map-no-bearing gate-internal-escape gate-the-line gate-rssi-egress
 gate-release-uuid-source gate-battery gate-conformance
-build-unit-test build-lint build-assemble-debug build-assemble-release gate-release-uuid-artifact"
+build-unit-test build-lint build-assemble-debug build-assemble-release gate-release-uuid-artifact
+build-manifests gate-permission"
 
 if [[ $# -ne 1 ]] || [[ "$1" == "--list" || "$1" == "-h" || "$1" == "--help" ]]; then
   echo "usage: $0 <stage>"

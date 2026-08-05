@@ -68,6 +68,10 @@ jobs:
       - name: "decision 41 — THE LINE (Crypto.kt pinned surface)"
         if: ${{ !cancelled() }}
         run: bash devops/ci/runner/run-stage.sh gate-the-line
+      # CLAIMS_REGISTER G1 / row A2 — raw RSSI must never leave the device.
+      - name: "G1 / A2 — raw RSSI must not leave the device"
+        if: ${{ !cancelled() }}
+        run: bash devops/ci/runner/run-stage.sh gate-rssi-egress
 
   # ================================================================================================
   # KNOWN-RED GATES — run, report loudly, do NOT block the ordinary path. BLOCKING on release.
@@ -113,6 +117,16 @@ jobs:
       - name: ":android:assembleDebug"
         if: ${{ !cancelled() }}
         run: bash devops/ci/runner/run-stage.sh build-assemble-debug
+      # CLAIMS_REGISTER G2 / row A4, decision 50. A PAIR — must stay adjacent, in this order, in
+      # this job: the gate reads both variants' merged manifests out of the workspace and the stage
+      # above it is what writes them. Manifest-merge only, no compile/R8/signing. Full rationale in
+      # .github/workflows/ci.yml and run-stage.sh's `build-manifests` case.
+      - name: "merged manifests, both variants (input to the permission gate)"
+        if: ${{ !cancelled() }}
+        run: bash devops/ci/runner/run-stage.sh build-manifests
+      - name: "G2 / A4 — merged-manifest permission allowlist (decision 50)"
+        if: ${{ !cancelled() }}
+        run: bash devops/ci/runner/run-stage.sh gate-permission
       - name: "conformance vectors (BLE codec — authoritative)"
         if: ${{ !cancelled() }}
         run: bash devops/ci/runner/run-stage.sh gate-conformance
