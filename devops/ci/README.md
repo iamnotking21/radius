@@ -25,9 +25,15 @@ devops/ci/
     the_line_gate.sh              decision 41 — Crypto.kt's import/top-level surface is PINNED
     conformance_gate.sh           40-contracts "all vectors run" — manifest pre-check + codec execution
     battery_gate.sh               <4%/hr scanning, <1%/day idle — STUB until hardware rig exists
+    comment_nesting_gate.sh       Kotlin block comments NEST (Java's don't) — hit this repo 4x.
+                                   depth-tracking scan, .kt/.kts under mobile/backend/devops.
+                                   NOT YET WIRED into fast-gates — see B13, HANDOFF to devops-tencent.
     lib/
       common.sh                   shared bash helpers (repo-root resolution, output formatting,
-                                   qa_strip_comments — comment stripping shared by 3 gates)
+                                   qa_strip_comments — comment stripping shared by 3 gates.
+                                   NOT used by comment_nesting_gate.sh — see that gate's header for why
+                                   stripping comments is exactly wrong for a gate that checks THEM)
+      comment_depth_scan.awk      char-by-char block-comment nesting depth scanner (awk, no toolchain)
       vectors_manifest_check.js   fast pre-check mirroring VectorManifestTest.kt's counting rule (Node)
       battery_threshold_check.js  numeric threshold + provenance enforcement (Node)
   tests/gates/                    self-tests for the gates above, against SYNTHETIC fixtures only
@@ -48,6 +54,7 @@ bash devops/ci/tests/gates/run_all.sh              # gate self-tests (~2s, synth
 bash devops/ci/gates/no_map_no_bearing_gate.sh
 bash devops/ci/gates/internal_escape_gate.sh
 bash devops/ci/gates/the_line_gate.sh
+bash devops/ci/gates/comment_nesting_gate.sh        # ~2.7s against the whole live repo today
 bash devops/ci/gates/release_uuid_gate.sh --skip-artifact   # source phase only
 
 # needs JDK 21 + Node on PATH (mobile toolchain — see qa-test task brief / mobile/CLAUDE.md)
@@ -76,6 +83,7 @@ these gates catch and why it matters."
 | `no_map_no_bearing_gate.sh` | **PASS** | No banned map/location/bearing API in mobile source. |
 | `internal_escape_gate.sh` | **PASS** | No mangled-JVM-symbol (`accountKey$`, `dailyKey$`, `ephemeralIdFor$`, `conformanceState$`, or any `$shared_debug`/`$shared_release`) referenced outside test source. ble-protocol has, correctly, documented the B11 finding inline as KDoc on `KeySchedule.dailyKey`/`ephemeralIdFor` and `Banding.conformanceState` — that documentation is prose, comments never compile, and this gate strips comments before scanning for exactly that reason (see the script's CALIBRATED note, found the same way the map/bearing gate's false positives were found: by running it and reading what it flagged). The underlying visibility hole itself (decision 43) is a design-level fix, not something this gate performs — it only guarantees OUR source never contains the escape. |
 | `the_line_gate.sh` | **PASS** | `Crypto.kt`'s imports (zero) and top-level declarations (`Sha256`, `hmacSha256`, `hkdfSha256`, `constantTimeEquals`) exactly match the pinned set (decision 41). |
+| `comment_nesting_gate.sh` | **PASS on the working tree as of 2026-08-05, NOT YET WIRED into CI (B13)** — see full note below the table. |
 | `release_uuid_gate.sh` (source) | **FAIL — real, open, unchanged all session** | `mobile/shared/src/commonMain/kotlin/com/radius/shared/protocol/Advertisement.kt:66` — `public const val SERVICE_UUID16: Int = 0xFDA9`, unconditional, on the release path, no `BuildConfig.DEBUG` guard, not in the allowlist. This is decision 34's exact scenario, and it is the finding that led to blocker B11 being opened. HANDOFF to ble-protocol/android-kotlin: guard it behind `BuildConfig.DEBUG` (and add it to `release_uuid_gate.allowlist` with the required justification comment) until the real SIG-allocated UUID exists, or wire the real value in if it's ready. |
 | `release_uuid_gate.sh` (artifact) | **PASS, with an important caveat** | The literal string does not appear in the assembled release APK's dex/resources — **because R8 decomposes the 16-bit int constant into two independent single-byte loads before it becomes one grep-able token, confirmed by disassembling the actual release build with `dexdump`.** Not an adversarial-evasion gap — it is what today's ordinary, non-adversarial code already produces. **The source scan is the load-bearing check for this class of violation, not the artifact scan.** Full writeup in `gates/release_uuid_gate.sh`'s header. A second false positive (a real match inside `libsqlcipher.so`, a third-party native binary, pure coincidence in dense compiled machine code) was found and fixed by scoping the artifact scan to `classes*.dex`/`resources.arsc`/`res/`/`assets/` only, excluding `lib/**/*.so`. |
 | `conformance_gate.sh` phase 1 (fast pre-check) | **PASS** | `vectors_manifest_check.js` now mirrors `VectorManifestTest.kt`'s counting rule exactly (see below) instead of maintaining its own, and agrees with it. |
@@ -89,6 +97,26 @@ decision-34 violation (`release_uuid_gate.sh` source phase) and the intentionall
 stub.** Gates 5 and 6 (security review) are green today because the codebase does not yet violate
 decisions 43/41 in production source — their job is to keep it that way as a mechanical backstop,
 not a one-time finding.
+
+**`comment_nesting_gate.sh` note, in full, because the story is the point of the gate:** Kotlin
+block comments NEST (Java's do not) — a literal `/*` written inside a KDoc opens a nested comment,
+the KDoc's own `*/` closes only the inner one, and everything after it vanishes silently to EOF.
+This has hit the project four independent times (mobile/design-tokens/scripts/generate.mjs;
+design-system's own bugfix comment about it; android-kotlin's `build.gradle.kts`, which zeroed a
+`dependencies{}` block with **no syntax error at all** — Gradle reported a missing Hilt dependency
+instead; and `mobile/shared/src/iosTest/.../IosRadioContractTest.kt:16`). At the moment this gate
+was written, instance 4 was **live and committed at HEAD** — confirmed by running the gate against
+`git show HEAD:<path>` directly, which fails exactly as expected (`6:1: block comment opened here …
+is still open at end of file`). **Mid-session, android-kotlin fixed it in the working tree**
+(uncommitted at the time of writing — split the glob with backticks and added a KDoc explaining
+why), which is why the table above reports PASS against the CURRENT working tree rather than a red
+result: this is the gate correctly reporting a fix that happened to land while it was being tested,
+not a gate that never caught anything. Self-test `test_comment_nesting_gate.sh` pins the ORIGINAL
+committed content verbatim as a fixture (not a simplified stand-in) precisely so this class of
+"the live tree got fixed out from under the gate" can never quietly make the regression case
+disappear — it will keep failing on the pinned fixture regardless of what HEAD says. **NOT YET
+WIRED into `fast-gates`** — `devops/ci/runner/run-stage.sh` is devops-tencent's file (RUNNER
+concern), so this is a HANDOFF (`.claude/memory/60-blockers.md` B13), not an edit made here.
 
 ## The point of that last table
 
@@ -137,3 +165,14 @@ exact value) that the owning agent does not have to reproduce the investigation.
    (`conformance_gate.sh`, `vectors_manifest_check.js`) — the vector count moved four times in one
    working session; any hardcoded figure would have been wrong again within hours. Report what the
    authoritative source says, live, every run.
+10. **Know when NOT to reuse a shared helper.** `comment_nesting_gate.sh` deliberately does not call
+    `qa_strip_comments` even though every other pattern-matching gate in this file does — this gate's
+    whole job is checking the STRUCTURE of comments, and stripping them first would blind it to the
+    exact thing it exists to find. "Reuse the shared helper" is a default, not a rule; state the
+    exception in writing when a gate is the one legitimate case that breaks it.
+11. **A regex that only sees one line at a time cannot answer a question about the whole file.**
+    (`comment_nesting_gate.sh` vs. the starting-point regex `grep -rnE '^[[:space:]]*\*.*(/\*|\*/)'`)
+    — whether a nested comment ever closes again is a property of the WHOLE file, not of any single
+    line. A char-by-char state machine that tracks depth across the file answers that question
+    directly, and gets the string/char-literal exception for free instead of needing a second
+    bolted-on heuristic to avoid flagging a glob path as a "banned" pattern.

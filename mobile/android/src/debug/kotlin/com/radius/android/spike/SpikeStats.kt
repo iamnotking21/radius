@@ -78,6 +78,19 @@ internal data class SpikeStats(
      * corrupts a total.
      */
     val radioEventsDropped: Long = 0L,
+    /**
+     * Scan results whose `timestampNanos` was unusable, so the observation time was forced to
+     * CALLBACK time. See `BleRadio.timestampsClamped`.
+     *
+     * The third loss counter, and the least like the other two. Nothing is missing from the file
+     * when this is non-zero — every row is present, every row looks ordinary, and every timing
+     * figure derived from those rows is quantised to when the app was scheduled rather than when
+     * the packet arrived. It has to reach [integrityNote] for exactly that reason: a run on such a
+     * handset is one where P2 latency is VOID, and until this was surfaced the verdict on that run
+     * still read "no bridging observed so far", which is a clean bill of health for a file whose
+     * timing conclusions cannot be drawn.
+     */
+    val timestampsClamped: Long = 0L,
     val writeFailures: Long = 0L,
     val lastEventLine: String = "",
 
@@ -161,13 +174,29 @@ internal data class SpikeStats(
     val integrityNote: String
         get() = when {
             startFailure.isNotEmpty() -> "NOT RUNNING — $startFailure"
-            diagnosticsDropped > 0L || writeFailures > 0L || radioEventsDropped > 0L ->
+            diagnosticsDropped > 0L || writeFailures > 0L || radioEventsDropped > 0L ||
+                timestampsClamped > 0L ->
                 "DEGRADED — $diagnosticsDropped dropped, $radioEventsDropped radio events lost, " +
-                    "$writeFailures write failures. Gaps in this file are OURS. Treat absence " +
-                    "claims as void." +
+                    "$writeFailures write failures, $timestampsClamped clamped scan timestamps. " +
+                    "The defects in this file are OURS or this handset's. Treat absence claims " +
+                    "as void." +
                     if (radioEventsDropped > 0L) {
                         " A LOST RADIO EVENT ALSO CORRUPTS scan_on_ms: an unclosed scan interval " +
                             "inflates it, so the battery attribution is wrong too, not just gappy."
+                    } else {
+                        ""
+                    } +
+                    if (timestampsClamped > 0L) {
+                        // Deliberately the loudest of the three. A dropped row is visibly absent;
+                        // a clamped timestamp leaves a row that looks perfectly normal and is
+                        // wrong, which is the failure mode this whole file is written against.
+                        " THIS HANDSET FABRICATES SCAN TIMESTAMPS: $timestampsClamped " +
+                            "observations had observedAt forced to CALLBACK time, so they are " +
+                            "quantised to when we were scheduled, not when the packet arrived. " +
+                            "Nothing is missing — the rows look normal and are wrong. P2 " +
+                            "latency and every inter-arrival gap in this run are VOID, not " +
+                            "noisy. Grep events.jsonl for TIMESTAMP_CLAMPED, and re-run P2 on " +
+                            "a different handset."
                     } else {
                         ""
                     }
@@ -221,6 +250,15 @@ internal data class SpikeStats(
             latencySamples == 0L ->
                 "No samples yet. Each cycle yields at most one per peer, so expect roughly one " +
                     "per minute per peer once both phones are running."
+            // Ahead of the skew branches on purpose: skew is CORRECTABLE off-device, a fabricated
+            // reception time is not. There is nothing to subtract, because the quantity that would
+            // have been measured was never recorded.
+            timestampsClamped > 0L ->
+                "VOID ON THIS HANDSET — $timestampsClamped scan results had no usable " +
+                    "timestampNanos and were dated at callback time. Every percentile below is a " +
+                    "measurement of our own scheduling latency. No off-device correction can " +
+                    "recover it. Re-run P2 on a different handset and record this one in " +
+                    "docs/oem.md."
             (latencyMinMs ?: 0L) < 0L ->
                 "CLOCK SKEW PROVEN: a first sighting arrived ${-(latencyMinMs ?: 0L)}ms BEFORE " +
                     "the cycle it belongs to. A packet cannot arrive before it was sent, so these " +

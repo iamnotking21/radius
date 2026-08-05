@@ -15,6 +15,27 @@ breaking change = new version field, never silent edit.
 | BLE | mobile/protocol/{SPEC,KEY_SCHEDULE,STATE_MACHINE,BANDING}.md + vectors/ | ble-protocol | ios-swift, android-kotlin, backend-go(proximity), qa-test, design-system(band copy) |
 | BLE-IMPL | mobile/shared/protocol/ (single Kotlin impl of the above) | ble-protocol | ios-swift, android-kotlin |
 | SHARED | mobile/shared public API (explicitApi strict) | android-kotlin | ios-swift, and every future mobile agent |
+| TOKENS-BUILD | mobile/design-tokens/tokens.json + scripts/generate.mjs | design-system | android-kotlin (live), ios-swift (at un-deferral), web-next (later) |
+
+## design-token BUILD CONTRACT — added 2026-08-05 (was prose in a LOG line; it is a contract)
+`:android:preBuild` runs `mobile/design-tokens/scripts/generate.mjs`. Consequences, all real:
+  1. **:android has a hard build-time dependency on a file owned by another agent.** A tokens.json
+     edit changes the Android build output. That is the same coupling shape as proto, and it gets
+     the same treatment.
+  2. **:android requires NODE on PATH.** devops-tencent asserts it in 5 build stages via
+     `require_node`; the 2 gate stages assert it for a DIFFERENT reason (their own JS), and the
+     messages say which. `:shared` alone does NOT pull it.
+  3. **A WCAG CONTRAST REGRESSION FAILS THE ANDROID BUILD.** 48 pairings, non-zero exit. This is
+     a deliberate property of generating rather than vendoring: tokens.json becomes the only place
+     a colour value exists, and accessibility stops being something anyone has to remember.
+  4. Discriminator for triage — the generator prints `N pairings checked, M regression(s)` on
+     success. If that line printed, node worked and contrast passed; you are looking at something
+     else. A node failure and an accessibility regression surface from the SAME Gradle task and
+     are completely different findings.
+  5. `build/tokens.resolved.json` is the intended input for a future Swift/TS generator. Anything
+     the Kotlin emitter hardcodes instead of reading from tokens.json will silently DIVERGE across
+     platforms the day a second generator exists. (One such hardcode — the spacing ramp — was found
+     by review and is being fixed; treat it as the class, not the instance.)
 | TOKENS | mobile/design-tokens/tokens.json | design-system | ios-swift, android-kotlin, web-next |
 | DB | backend/migrations/*.sql | backend-go | data-ml (READ ONLY — handoff for changes) |
 | EVENTS | backend/proto/events/**.proto | backend-go | data-ml, backend-go(safety svc) |

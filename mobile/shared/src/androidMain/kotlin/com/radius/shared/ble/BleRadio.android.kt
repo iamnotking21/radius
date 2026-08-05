@@ -688,8 +688,16 @@ public actual class BleRadio(
         synchronized(lock) {
             if (isShutdown) return BleOutcome.Rejected(BleOutcome.Reason.NOT_RUNNING, null)
             desiredScan = request
-            // A scan-only device is the decision-35 majority case and still owes §8.5.2 a prune at
-            // every boundary. Starting a scan is enough to make the device "running".
+            // CALLED, AND EXPECTED TO DO NOTHING. Scanning is NOT an input to EpochTickerPolicy —
+            // read its KDoc for why `desiredScan` was removed from the predicate (ghost mode must
+            // not be able to suspend key destruction). This line and its twin in stopScan are
+            // therefore no-ops unless something else already made the ticker wanted, and they are
+            // kept only so that a future input to the predicate cannot be missed here.
+            //
+            // The sentence that used to sit here — "starting a scan is enough to make the device
+            // 'running'" — was the exact mental model EpochTickerPolicy exists to kill. A scan-only
+            // device owes §8.5.2 a prune at every boundary because it HOLDS A RING, which it states
+            // by registering an epoch listener; not because its receiver happens to be on.
             syncEpochTickerLocked()
             dutyJob?.cancel()
             dutyJob = null
@@ -712,6 +720,8 @@ public actual class BleRadio(
             desiredScan = null
             dutyJob?.cancel()
             dutyJob = null
+            // No-op under the corrected predicate — see startScan. STOPPING a scan must not stop
+            // key destruction either; a ghosted device still holds a ring.
             syncEpochTickerLocked()
             return stopScanPlatformLocked("caller")
         }

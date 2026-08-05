@@ -13,8 +13,16 @@ import kotlin.test.assertTrue
  * proven on a physical iPhone alongside a physical Android handset on radio day, or not at all.
  *
  * What SHOULD eventually live in this source set: the shared-core conformance-vector run
- * (mobile/protocol/vectors/*.json) executed on the Kotlin/Native target, proving the iOS build of
- * the codec is byte-identical to the JVM build. That is the regression net ADR-007 keeps.
+ * (`mobile/protocol/vectors/` `*.json`) executed on the Kotlin/Native target, proving the iOS build
+ * of the codec is byte-identical to the JVM build. That is the regression net ADR-007 keeps.
+ *
+ * THE SPLIT PATH ABOVE IS LOAD-BEARING, NOT STYLE. Kotlin block comments NEST. Writing the glob
+ * unbroken puts a comment-OPEN delimiter inside this KDoc; the delimiter that ends this KDoc then
+ * closes only that inner comment, and everything below — the class, the @Test — is swallowed by an
+ * outer comment that never closes. The compiler reports "expecting a top level declaration" at EOF,
+ * nowhere near the glob that caused it. This source set compiles on macOS only, so the error would
+ * surface for the first time on a CI runner nobody is watching. Never write a bare glob, or any
+ * path containing one, inside a comment in this repo.
  */
 class IosRadioContractTest {
 

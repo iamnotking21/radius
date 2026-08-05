@@ -217,7 +217,8 @@ internal fun SpikeScreen(
         Text(
             text = stats.integrityNote,
             color = if (stats.bridgedAddresses > 0 || stats.bridgedEids > 0 ||
-                stats.diagnosticsDropped > 0 || stats.writeFailures > 0
+                stats.diagnosticsDropped > 0 || stats.writeFailures > 0 ||
+                stats.radioEventsDropped > 0 || stats.timestampsClamped > 0
             ) {
                 colors.status.danger
             } else {
@@ -360,6 +361,11 @@ internal fun SpikeScreen(
         // ledger's interval open and inflates scan_on_ms, which is what the battery figure is
         // divided by. Shown separately so the two are never read as one number.
         Stat("Radio LIFECYCLE events lost (corrupts scan_on_ms)", stats.radioEventsDropped.toString())
+        // The third loss counter, and the only one that costs no rows. Non-zero means this handset
+        // fabricates ScanResult.timestampNanos, so P2 is measuring our own scheduling. Visible here
+        // because the person in the car park should be able to abandon the run in minute two rather
+        // than discover it in the file six weeks later.
+        Stat("Scan timestamps CLAMPED (voids P2 timing)", stats.timestampsClamped.toString())
         Stat("File write failures", stats.writeFailures.toString())
 
         Text("Resolved peers by slot", color = colors.content.primary)

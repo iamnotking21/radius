@@ -72,6 +72,11 @@ jobs:
       - name: "G1 / A2 — raw RSSI must not leave the device"
         if: ${{ !cancelled() }}
         run: bash devops/ci/runner/run-stage.sh gate-rssi-egress
+      # B13 — Kotlin block comments nest; a `/*` in a KDoc swallows the file to EOF and the compiler
+      # often reports a different problem elsewhere. Full note in .github/workflows/ci.yml.
+      - name: "B13 — Kotlin nested block comments must balance"
+        if: ${{ !cancelled() }}
+        run: bash devops/ci/runner/run-stage.sh gate-comment-nesting
 
   # ================================================================================================
   # KNOWN-RED GATES — run, report loudly, do NOT block the ordinary path. BLOCKING on release.

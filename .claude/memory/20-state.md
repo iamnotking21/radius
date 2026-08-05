@@ -20,8 +20,9 @@ build: Temurin JDK21 · wrapper 8.13 · AGP 8.9 · Kotlin 2.1.20 · SDK 35
 CI: run 4 fully green, all 3 jobs, ubuntu-latest. Android toolchain proven on Linux.
   CI has already caught one real bug local testing structurally could not (a Windows-only
   assertion inside the fix for a Windows-only hardcode).
-gates (8): conformance · invariant-1 map/bearing (now incl backend+website) · internal-escape ·
-  THE LINE · RSSI egress · merged-manifest permissions · 0xFDA9 release · battery
+gates (9, 1 not yet wired — B13): conformance · invariant-1 map/bearing (now incl backend+website) ·
+  internal-escape · THE LINE · RSSI egress · merged-manifest permissions · 0xFDA9 release · battery ·
+  comment-nesting (NEW 2026-08-05, HANDOFF to devops-tencent to wire into fast-gates, B13)
   0xFDA9 + battery are KNOWN-RED BY DESIGN and use xfail: they go red on GOOD news.
 structural proofs: 0 INTERNET permission in merged manifest, both variants ⇒ the app cannot
   open a socket. Spike harness absent from release (105 classes debug, 0 release — re-checked
@@ -307,3 +308,100 @@ fonts pending the founder's bundled-OFL-vs-Downloadable-Fonts call. No stroke-wi
 motion tokens and nothing for M3 errorContainer/scrim/surfaceDim/surfaceBright — design-system
 deliberately did not invent those, so M3 defaults stand.
 STILL TRUE: no BLE has run on real hardware. Nothing here is a Phase 0 spike result.
+
+## qa-test — 2026-08-05 — comment-nesting gate (B13, HANDOFF to devops-tencent)
+NEW GATE: `devops/ci/gates/comment_nesting_gate.sh` + engine `lib/comment_depth_scan.awk` +
+self-test `devops/ci/tests/gates/test_comment_nesting_gate.sh` (15 assertions). Total gate
+self-test count: 80 -> 95, all pass. Closes the trap that has hit this project FOUR times
+independently: Kotlin block comments NEST (Java's don't) — a literal `/*` inside a KDoc opens a
+nested comment that the KDoc's own `*/` closes only partially, silently swallowing everything after
+it to EOF, with no syntax error at the point of the mistake.
+CHOSE the nesting-aware scan over the reviewer's line regex (`grep -rnE
+'^[[:space:]]*\*.*(/\*|\*/)'`): a char-by-char state machine tracks block-comment depth across the
+WHOLE file (not one line at a time) and reports depth != 0 at EOF — the actual failure condition —
+while correctly ignoring `/*`/`*/`/`//` inside STRING/CHAR/raw-string literals with no bolted-on
+exception needed. DELIBERATELY does not reuse `qa_strip_comments` (this gate checks comment
+STRUCTURE; stripping first would blind it) and DELIBERATELY does not exclude test source the way
+every other pattern gate here does — the live violation IS in test source (iosTest), the one source
+set nothing on this machine compiles, and that is exactly the point.
+LIVE STATUS, stated honestly rather than waiting for a clean run to claim a pass: at HEAD (committed),
+`mobile/shared/src/iosTest/kotlin/com/radius/shared/ble/IosRadioContractTest.kt:16` IS the violation
+(`vectors/*.json` unbroken inside a KDoc) — verified by running the gate against `git show
+HEAD:<path>` directly: fails exactly as expected. MID-SESSION, android-kotlin fixed it in the working
+tree (uncommitted at time of writing — backtick-split the glob + added a KDoc explaining why), so the
+gate now shows PASS against the current working tree. This is the gate correctly reporting a fix that
+landed while it was being tested, not a gate that never caught anything — self-test pins the ORIGINAL
+committed content verbatim so the regression case can never quietly disappear regardless of what HEAD
+says. Full story in `devops/ci/README.md`'s status table note.
+NOT YET WIRED into CI: `run-stage.sh` is devops-tencent's file (RUNNER concern per root CLAUDE.md
+carve-out). HANDOFF filed as B13 in 60-blockers.md: add a `gate-comment-nesting` case + STAGES entry
+to `run-stage.sh`, and one step in the `fast-gates` job of all four workflow files, same shape as the
+existing `gate-rssi-egress` wiring.
+
+## android-kotlin — 2026-08-05 — review round 2 delta (4 must-fix + 4 small), ALL CLOSED
+BUILD, this working tree, JDK21 Temurin, `--no-daemon`: `:android:assembleDebug`
+`:android:testDebugUnitTest` `:shared:testDebugUnitTest` `:android:lintDebug` = BUILD SUCCESSFUL.
+android 52 tests / shared 69 tests, 0 failures 0 skipped. lint 0 errors, 51 warnings — the same
+pre-existing set (33 GradleDependency, 8 UnusedResources, 6 AGP-version, 1 DefaultLocale in
+SpikeScreen:466, 1 OldTargetApi, 1 UnusedAttribute, 1 MissingApplicationIcon), NONE from this
+delta. Forced recompile of both Kotlin tasks: ZERO compiler warnings.
+1. COMMENT NESTING, 4th recurrence, `IosRadioContractTest.kt:16`. Confirmed exactly as reported:
+   `vectors/*.json` opened a nested comment inside a KDoc and swallowed the class, the @Test and
+   EOF. Fixed by splitting the path across a backtick pair + a KDoc paragraph saying WHY the split
+   is load-bearing. It lived because iosTest is the one source set nothing on Windows compiles.
+2. `SpikeController.sampleBattery` — `drain.add` and the five `duty` reads were outside `lock`
+   while every other reader/writer took it. Now ONE critical section producing a `BatteryRowSnapshot`
+   (writer, n, scanning, advertising, scan_on_ms, advertise_on_ms, transitions, sightings, peers,
+   write_failures); the CSV row is assembled from the snapshot. `batteryReader.read()` stays outside
+   the lock deliberately — it is a binder call and must not stall the event collector. This was P1's
+   numerator and denominator with no happens-before edge, failing SILENTLY because longs do not throw.
+3. `BleRadio.timestampsClamped` was written and never read. Now reaches meta.json
+   (`timestamps_clamped` + a `_note`), `SpikeStats.timestampsClamped`, the DEGRADED branch of
+   `integrityNote`, a new VOID branch of `latencyNote` ahead of the skew branches (skew is
+   correctable off-device, a fabricated reception time is not), and a row on SpikeScreen. Before
+   this a run on a handset that fabricates `ScanResult.timestampNanos` still read "no bridging
+   observed so far".
+4. `BleRadio.ios.kt` had ZERO synchronisation against a fully-locked Android actual. Added an
+   `NSRecursiveLock` + private inline `withLock` (no new dependency: Foundation interop is already
+   linked; atomicfu would be an ORCHESTRATION §8 escalation). RECURSIVE because `synchronized` is
+   reentrant and the Android actual leans on that 3 frames deep — a plain NSLock would deadlock
+   rather than race. Closed: the double-ticker launch, the post-`shutdown()` listener invocation
+   (now `withLock { if (isShutdown) return else epochBoundaryListener }`, byte-identical to
+   Android:657), and the missing NOT_RUNNING checks in `setAdvertiseRole`/`startAdvertising`
+   (+`startScan`, same fail-closed answer Android gives). Boundary body extracted to
+   `onEpochBoundary()` so the two actuals can be read side by side, which is the only review that
+   ever catches radio drift.
+ALSO: killed the "starting a scan is enough to make the device running" comment in
+`BleRadio.android.kt` (both `syncEpochTickerLocked()` calls in start/stopScan are no-ops under the
+corrected predicate and now say so); `SpikeController.stop()` claims the run under `lock`
+symmetrically with `start()`; `RadiusTheme` maps `inversePrimary` = `accent.radar.wash` (signal/600,
+5.20:1 on inverseSurface — the ONLY teal stop that clears AA there; signal/400 measures 1.84:1) and
+dropped a `@Suppress("UNUSED_PARAMETER")` that was simply false.
+INVERSEPRIMARY CAVEAT, owed to design-system: that pairing is NOT one of generate.mjs's 48 verified
+combinations, so it is hand-verified, not build-enforced. Proper fix is an `accent/*/onInverse` role
+in tokens.json. Also: we are using a token whose designed ROLE is a wash BACKGROUND as a FOREGROUND.
+VERIFICATION LIMIT, stated plainly: `iosMain`/`iosTest` are still compiled by NOBODY (B4). Fix 1 and
+Fix 4 are both in that half. I ran a nesting-aware comment/brace/paren scanner over every .kt/.kts
+under mobile/ — ALL BALANCED — but a balanced-delimiter scan is not a type-check. `NSRecursiveLock`
+binding, inline non-local returns and expect/actual shape are OWED to the first macOS CI job.
+STILL TRUE: no BLE has run on real hardware. No battery number exists. Nothing here is a spike result.
+2026-08-05 devops-tencent · B13 gate-comment-nesting WIRED. fast-gates, always blocking, all 4
+  workflow files + run-stage.sh case + STAGES. 3.3s against the full repo, awk + sh, no toolchain.
+  Added `awk` as an explicit runner requirement — it is the one gate dependency that is not
+  coreutils, and it is present on every Linux image and in Git Bash, so this is documentation not a
+  provisioning change.
+  TRIAGE NOTE ADDED, and it runs OPPOSITE to the rest of README §5b: every other row there answers
+  "runner or code?". This one is CODE UNTIL PROVEN OTHERWISE. The scanner's documented gaps all fail
+  toward FALSE POSITIVE, never toward hiding an unclosed comment, so a red result is a claim worth
+  believing; and the underlying defect makes the compiler report A DIFFERENT PROBLEM IN A DIFFERENT
+  PLACE (build.gradle.kts: whole `dependencies {}` block swallowed, Gradle reported a missing Hilt
+  dependency, zero syntax errors). Also pinned: the gate deliberately does NOT exclude test sources
+  — the live violation was in iosTest, the one source set nobody has ever compiled — so a later
+  "tidy the exclusions to match the other pattern gates" would silently undo the catch. Written into
+  run-stage.sh next to the case, not only the README, because that is where someone tidying looks.
+  FULL SWEEP, 16 stages, all green on Windows: 6 fast gates + build-unit-test/lint/assembleDebug +
+  build-manifests + gate-permission + conformance (116 vectors) exit 0; known-red pair 0 push /
+  1 strict. Self-tests 95/95, 9 gates. The three :android stages that were RED last round are green
+  again — f91bdd0 removed the token shims, so that cross-agent handoff closed itself.
+  4 YAMLs parse; every stage name in every workflow resolves against the table, checked mechanically.
+  UNCHANGED AND STILL THE HEADLINE: NOTHING HAS EVER RUN IN CI. Not once, on any provider.

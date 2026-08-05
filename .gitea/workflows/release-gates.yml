@@ -42,6 +42,9 @@ jobs:
       - name: "G1 / A2 — raw RSSI must not leave the device"
         if: ${{ !cancelled() }}
         run: bash devops/ci/runner/run-stage.sh gate-rssi-egress
+      - name: "B13 — Kotlin nested block comments must balance"
+        if: ${{ !cancelled() }}
+        run: bash devops/ci/runner/run-stage.sh gate-comment-nesting
 
   battery-gate:
     name: "battery gate (STRICT — expected RED, no hardware rig)"

@@ -85,6 +85,18 @@ jobs:
         if: ${{ !cancelled() }}
         run: bash devops/ci/runner/run-stage.sh gate-rssi-egress
 
+      # B13. Kotlin block comments NEST. A literal `/*` inside a KDoc opens a nested comment and the
+      # rest of the file is silently swallowed to EOF. Hit four times independently here, and the
+      # reason it is a gate and not a review note is that the compiler often reports a DIFFERENT
+      # problem somewhere ELSE: in build.gradle.kts it ate the whole `dependencies {}` block and
+      # Gradle reported a missing Hilt dependency, with no syntax error at all.
+      # IF THIS GOES RED, TREAT IT AS REAL. The scanner's documented gaps all fail toward false
+      # positive, never toward hiding an unclosed comment — so a false positive is a gate bug worth
+      # fixing, never a reason to skip.
+      - name: "B13 — Kotlin nested block comments must balance"
+        if: ${{ !cancelled() }}
+        run: bash devops/ci/runner/run-stage.sh gate-comment-nesting
+
   # ================================================================================================
   # KNOWN-RED GATES — run, report loudly, do NOT block the ordinary path.
   #

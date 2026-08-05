@@ -464,9 +464,12 @@ public object RadiusTheme {
 
 @Composable
 public fun RadiusTheme(
-    // Dark-first product. RadiusColors.light is null because no light-mode variable is designed;
-    // the parameter stays so the call site does not have to change when one is.
-    @Suppress("UNUSED_PARAMETER") useDarkTheme: Boolean = isSystemInDarkTheme(),
+    // Dark-first product. RadiusColors.light is null because no light-mode variable is designed, so
+    // this currently selects dark either way — but it IS read, on the next line, and the day a light
+    // palette exists it starts selecting. (It carried a @Suppress("UNUSED_PARAMETER") that was
+    // simply false, and a suppression that lies is worse than none: it trains the next reader to
+    // believe the parameter is decorative.)
+    useDarkTheme: Boolean = isSystemInDarkTheme(),
     content: @Composable () -> Unit,
 ) {
     val colors = RadiusColors.light.takeIf { !useDarkTheme } ?: RadiusColors.dark
@@ -499,6 +502,27 @@ public fun RadiusTheme(
         surfaceContainerHighest = colors.surface.modal,
         inverseSurface = colors.content.primary,
         inverseOnSurface = colors.surface.canvas,
+
+        // ---- THE ONE UNMAPPED SLOT THAT WAS ACTUALLY VISIBLE. ----
+        // inversePrimary is what M3 draws a Snackbar's ACTION LABEL with, on inverseSurface — and
+        // inverseSurface is mapped, so the two above were putting baseline M3 purple on our own
+        // inverted surface. Every other gap in the list at the bottom of this file is unreachable
+        // or invisible; this one shipped a fifth hue into the first component a user taps after an
+        // error.
+        //
+        // WHY THE WASH STOP, WHICH IS NAMED FOR A BACKGROUND. inversePrimary means "primary, as
+        // drawn on inverseSurface". `primary` here is signal/400, which measures 1.84:1 on
+        // inverseSurface — invisible. signal/600 is the ONLY stop in the ramp that clears AA there:
+        // 5.20:1, computed with the same WCAG 2.1 sRGB formula generate.mjs uses. We are using its
+        // VALUE as a foreground; its designed ROLE is a wash background on a dark surface.
+        //
+        // THAT PAIRING IS NOT IN THE GENERATOR'S 48 VERIFIED COMBINATIONS, so it is NOT build
+        // -enforced and a future ramp edit could break it silently. The proper fix is an
+        // `accent/*/onInverse` role in tokens.json — raised to design-system, not invented here.
+        // It stays teal rather than a neutral because inversePrimary must track `primary`, and the
+        // "primary is Radar's accent app-wide" problem is already recorded once below; recording it
+        // twice, in two places that could then diverge, is worse than the gap itself.
+        inversePrimary = colors.accent.radar.wash,
         error = colors.status.danger,
         onError = colors.content.onFill,
         // Elevation is expressed as SURFACE LIGHTENING plus a hairline, per the token notes — not
@@ -543,6 +567,11 @@ public fun RadiusTheme(
 //  - errorContainer / onErrorContainer / scrim / surfaceBright / surfaceDim are left at M3 default
 //    because no token maps to them. They are reachable only via stock components we do not use yet.
 //    Interpolating values for them would be inventing palette; raised in the HANDOFF instead.
+//    THE TEST FOR THIS BULLET IS "can it appear on a surface we DID map", not "is it unmapped".
+//    inversePrimary used to sit in this list by omission and failed that test — it is the Snackbar
+//    action label, drawn on inverseSurface, which is mapped. It is now mapped above, with the one
+//    caveat that its contrast against inverseSurface is verified by hand rather than by
+//    generate.mjs. Anything added to this list from now on states which surfaces it can appear on.
 //  - M3 derives DISABLED colours arithmetically (onSurface at 38% alpha) and offers no hook to
 //    substitute content.disabled. The two are close in intent but not equal. Anywhere disabled
 //    state is load-bearing, set the colour explicitly from content.disabled — and remember it can

@@ -396,19 +396,51 @@ internal class SpikeController @Inject constructor(
         }
     }
 
+    /**
+     * ONE CRITICAL SECTION, NOT FOUR. Everything this row is built from is read or mutated under
+     * [lock] in a single block, and the row is assembled from the snapshot afterwards.
+     *
+     * This method runs on a `Dispatchers.Default` thread that is NOT the radio-event collector's.
+     * [duty] and [drain] are plain-field classes and say so; every other reader and writer of them
+     * — `onRadioEvent`, `densityBucketLoop`, `onDiagnostic`, `publish`, `stop` — already takes the
+     * lock. Leaving `drain.add` and the four `duty` reads outside it left the P1 NUMERATOR and its
+     * DENOMINATOR with no happens-before edge to the writes that produce them: `scan_on_ms_cum` in
+     * `battery.csv` could be arbitrarily stale, and there is no exception to notice because these
+     * are longs and booleans rather than collections. A quietly wrong denominator is worse than a
+     * crash — the crash gets fixed, the wrong number gets published.
+     */
     private fun sampleBattery() {
-        val w = synchronized(lock) { writer } ?: return
         val cfg = _config.value
+        // OUTSIDE the lock ON PURPOSE: this is a binder call into BatteryManager and can block.
+        // Holding the radio-shared monitor across it would stall the event collector for its
+        // duration, which is exactly the kind of coupling scan_on_ms cannot afford.
         val sample = batteryReader.read()
-        val n = synchronized(lock) { ++batterySamples }
-        drain.add(sample)
+
+        val snapshot = synchronized(lock) {
+            val w = writer ?: return
+            drain.add(sample)
+            BatteryRowSnapshot(
+                writer = w,
+                n = ++batterySamples,
+                scanning = duty.scanning,
+                advertising = duty.advertising,
+                scanOnMs = duty.scanOnMs(),
+                advertiseOnMs = duty.advertiseOnMs(),
+                scanOpenTransitions = duty.scanOpenTransitions,
+                sightings = sightingCount,
+                distinctPeers = densityAccumulator.distinctPeersEver,
+                concurrentPeers = concurrentPeersNow,
+                writeFailures = w.writeFailures,
+            )
+        }
+        val w = snapshot.writer
 
         val scanMode = SpikeTiming.effectiveScanMode(cfg)
         val validForDrain = cfg.batteryFiguresValid && !sample.plugged
 
         w.appendBatteryCsv(
             listOf(
-                n.toString(),
+                snapshot.n.toString(),
                 sample.wallUtcMs.toString(),
                 SpikeWriter.isoUtc(sample.wallUtcMs),
                 (sample.wallUtcMs - startedAtMillis).toString(),
@@ -435,17 +467,17 @@ internal class SpikeController @Inject constructor(
                 SpikeTiming.scanModeName(scanMode),
                 SpikeTiming.nominalScanDutyPct(scanMode).toString(),
                 cfg.maxCapture.toString(),
-                duty.scanning.toString(),
-                duty.advertising.toString(),
+                snapshot.scanning.toString(),
+                snapshot.advertising.toString(),
                 radio.advertiseState.value.status.name,
-                duty.scanOnMs().toString(),
-                duty.advertiseOnMs().toString(),
-                duty.scanOpenTransitions.toString(),
-                sightingCount.toString(),
-                densityAccumulator.distinctPeersEver.toString(),
-                concurrentPeersNow.toString(),
+                snapshot.scanOnMs.toString(),
+                snapshot.advertiseOnMs.toString(),
+                snapshot.scanOpenTransitions.toString(),
+                snapshot.sightings.toString(),
+                snapshot.distinctPeers.toString(),
+                snapshot.concurrentPeers.toString(),
                 radio.diagnosticsDropped.toString(),
-                w.writeFailures.toString(),
+                snapshot.writeFailures.toString(),
                 validForDrain.toString(),
             ).joinToString(",") { csvCell(it) },
         )
@@ -585,7 +617,20 @@ internal class SpikeController @Inject constructor(
     }
 
     fun stop() {
-        val w = synchronized(lock) { writer }
+        // RELEASE THE RUN UNDER THE LOCK, symmetrically with start(). start() claims it with
+        // `if (runningFlag) return; runningFlag = true`; this end of the pair used only to READ the
+        // writer, so two concurrent stops would both see the same non-null reference, both reach
+        // closeMeta, and append a second copy of every summary key to meta.json — a file whose
+        // duplicate keys the analysis would resolve last-wins, silently.
+        //
+        // Not reachable today: every caller is on the main thread (the service's onDestroy and the
+        // debug screen). "Today" and "on the main thread" were nowhere stated or enforced, and the
+        // cost of stating it in code rather than in a comment is two lines.
+        val w = synchronized(lock) {
+            if (!runningFlag) return
+            runningFlag = false
+            writer
+        }
         radio.stopAdvertising()
         radio.setAdvertiseRole(AdvertiseRole.SCAN_ONLY, AdvertiseRoleSource.DEBUG_SPIKE_HARNESS)
         radio.stopScan()
@@ -678,6 +723,18 @@ internal class SpikeController @Inject constructor(
             // interval, which inflates scan_on_ms — the denominator that makes the battery figure
             // attributable at all. See BleRadio.eventsDropped.
             summary["radio_events_dropped"] = radio.eventsDropped.toString()
+            // THE THIRD LOSS COUNTER, and the one that leaves no hole to notice. A clamped scan
+            // timestamp means observedAt is the moment our callback ran, not the moment the packet
+            // arrived — the row is present, ordinary-looking, and wrong. Non-zero VOIDS every P2
+            // percentile and every inter-arrival gap in this run. It has to be in meta.json next to
+            // the other two, because the alternative is knowing to grep events.jsonl for
+            // TIMESTAMP_CLAMPED, which nobody does six weeks later.
+            summary["timestamps_clamped"] = radio.timestampsClamped.toString()
+            summary["timestamps_clamped_note"] =
+                "NON-ZERO ⇒ this handset does not populate ScanResult.timestampNanos usably. " +
+                    "P2 latency and density inter-arrival figures from this run are VOID, not " +
+                    "noisy, and no off-device clock correction recovers them. Record the model in " +
+                    "mobile/android/docs/oem.md."
             summary["write_failures"] = w.writeFailures.toString()
             summary["stop_collectors_joined"] = joined.toString()
             summary["integrity"] = _stats.value.integrityNote
@@ -756,6 +813,9 @@ internal class SpikeController @Inject constructor(
         synchronized(lock) {
             writer = null
             advertiseRequest = null
+            // Already false — the claim at the top of stop() cleared it. Left in place so that the
+            // final state of a stopped run is written down in one block rather than inferred from
+            // an early return twenty lines up.
             runningFlag = false
         }
         publish()
@@ -1377,6 +1437,7 @@ internal class SpikeController @Inject constructor(
                 peripheralRoleSupported = radio.peripheralRoleSupported,
                 diagnosticsDropped = radio.diagnosticsDropped,
                 radioEventsDropped = radio.eventsDropped,
+                timestampsClamped = radio.timestampsClamped,
                 writeFailures = w?.writeFailures ?: 0L,
                 lastEventLine = lastEventLine,
 
@@ -1458,6 +1519,29 @@ internal class SpikeController @Inject constructor(
     private fun <K> bump(map: MutableMap<K, Long>, key: K) {
         map[key] = (map[key] ?: 0L) + 1L
     }
+
+    /**
+     * Everything one `battery.csv` row needs from the shared accumulators, read in ONE critical
+     * section so the row is internally consistent.
+     *
+     * It is not only about visibility. Reading `scan_on_ms` and `scanning` in two separate locked
+     * blocks can produce a row saying `scanning=false` next to a `scan_on_ms` captured while the
+     * scan was still open — a row that describes no instant the device was ever in. The battery
+     * analysis divides one of these columns by another; they have to come from the same moment.
+     */
+    private class BatteryRowSnapshot(
+        val writer: SpikeWriter,
+        val n: Long,
+        val scanning: Boolean,
+        val advertising: Boolean,
+        val scanOnMs: Long,
+        val advertiseOnMs: Long,
+        val scanOpenTransitions: Long,
+        val sightings: Long,
+        val distinctPeers: Int,
+        val concurrentPeers: Int,
+        val writeFailures: Long,
+    )
 
     private enum class EventKind { CONTROL, RADIO }
 

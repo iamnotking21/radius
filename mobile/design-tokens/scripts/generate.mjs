@@ -54,7 +54,7 @@ function walk(root, dottedPath) {
   const segs = dottedPath.split(".");
   let node = root;
   for (const seg of segs) {
-    if (node == null || !(seg in node)) {
+    if (node == null || typeof node !== "object" || !Object.prototype.hasOwnProperty.call(node, seg)) {
       throw new Error(`Broken reference: "{${dottedPath}}" -- no such path (stuck at "${seg}")`);
     }
     node = node[seg];
@@ -115,7 +115,31 @@ function get(shortPath) {
 // ---------------------------------------------------------------------------
 // 3. contrast verification (WCAG 2.1, sRGB relative luminance)
 // ---------------------------------------------------------------------------
-function relLuminance(hex) {
+
+// Both relLuminance and toKotlinColor (section 4) do raw byte-slicing on a hex string and
+// have NO alpha handling. An 8-digit hex (#rrggbbaa) silently slices to the opaque rgb prefix
+// in relLuminance -- fabricating a contrast ratio that ignores the alpha entirely -- and in
+// toKotlinColor produces `ComposeColor(0xFF<rrggbbaa>)`, a 34-bit literal that Kotlin's
+// `Color(Long)` masks to its low 32 bits, silently emitting an opaque colour where a
+// translucent one was authored. Neither failure throws anywhere on its own. This guard is the
+// single choke point for both: any token value that is not a bare 6-digit opaque hex fails
+// LOUD, here, with the token path that produced it, instead of downstream as a fabricated
+// number or a wrong-but-plausible colour.
+const OPAQUE_HEX_RE = /^#[0-9a-fA-F]{6}$/;
+function assertOpaqueHex(hex, context) {
+  if (typeof hex !== "string" || !OPAQUE_HEX_RE.test(hex)) {
+    throw new Error(
+      `"${hex}" (from "${context}") is not a bare 6-digit opaque hex colour ("#rrggbb"). ` +
+        `Alpha hex ("#rrggbbaa") is not supported by this generator -- relLuminance would silently ` +
+        `ignore the alpha byte and toKotlinColor would silently emit an opaque colour. If this token ` +
+        `is meant to be translucent, alpha support needs to be added to generate.mjs deliberately, ` +
+        `not discovered by a downstream contrast or colour bug.`,
+    );
+  }
+}
+
+function relLuminance(hex, context = hex) {
+  assertOpaqueHex(hex, context);
   const h = hex.replace("#", "");
   const r = parseInt(h.slice(0, 2), 16) / 255;
   const g = parseInt(h.slice(2, 4), 16) / 255;
@@ -124,9 +148,9 @@ function relLuminance(hex) {
   return 0.2126 * f(r) + 0.7152 * f(g) + 0.0722 * f(b);
 }
 
-function contrastRatio(hexA, hexB) {
-  const lA = relLuminance(hexA);
-  const lB = relLuminance(hexB);
+function contrastRatio(hexA, hexB, contextA = hexA, contextB = hexB) {
+  const lA = relLuminance(hexA, contextA);
+  const lB = relLuminance(hexB, contextB);
   const lighter = Math.max(lA, lB);
   const darker = Math.min(lA, lB);
   return (lighter + 0.05) / (darker + 0.05);
@@ -198,7 +222,7 @@ const rows = [];
 for (const [label, fgPath, bgPath, min, tier] of CHECKS) {
   const fg = get(fgPath);
   const bg = get(bgPath);
-  const ratio = contrastRatio(fg, bg);
+  const ratio = contrastRatio(fg, bg, fgPath, bgPath);
   const pass = ratio >= min;
   if (!pass) failures++;
   rows.push({ label, ratio: ratio.toFixed(2), min, tier, pass });
@@ -276,7 +300,8 @@ function kdocLines(indent, text) {
   return out;
 }
 
-function toKotlinColor(hex) {
+function toKotlinColor(hex, context = hex) {
+  assertOpaqueHex(hex, context);
   const h = hex.replace("#", "").toUpperCase();
   return `ComposeColor(0xFF${h})`;
 }
@@ -351,24 +376,24 @@ push(
 push(...kdocLines("        ", 'Elevation ladder. elev/0..4, "surface lightening + hairline first, shadow second."'));
 push("        public object Surface {");
 push(...kdocLines("            ", "elev/0. App background."));
-push(`            public val canvas: ComposeColor = ${toKotlinColor(get("surface.canvas"))}`);
+push(`            public val canvas: ComposeColor = ${toKotlinColor(get("surface.canvas"), "surface.canvas")}`);
 push(...kdocLines("            ", "Recessed wells: text-input fill, code/mono blocks."));
-push(`            public val sunken: ComposeColor = ${toKotlinColor(get("surface.sunken"))}`);
+push(`            public val sunken: ComposeColor = ${toKotlinColor(get("surface.sunken"), "surface.sunken")}`);
 push(...kdocLines("            ", "elev/1. Default content surface."));
-push(`            public val base: ComposeColor = ${toKotlinColor(get("surface.base"))}`);
+push(`            public val base: ComposeColor = ${toKotlinColor(get("surface.base"), "surface.base")}`);
 push(...kdocLines("            ", "elev/2. Cards, chips, tiles."));
-push(`            public val raised: ComposeColor = ${toKotlinColor(get("surface.raised"))}`);
+push(`            public val raised: ComposeColor = ${toKotlinColor(get("surface.raised"), "surface.raised")}`);
 push(...kdocLines("            ", "elev/3. Menus, tooltips, transient overlays."));
-push(`            public val overlay: ComposeColor = ${toKotlinColor(get("surface.overlay"))}`);
+push(`            public val overlay: ComposeColor = ${toKotlinColor(get("surface.overlay"), "surface.overlay")}`);
 push(...kdocLines("            ", "elev/4. Sheets, dialogs, modals."));
-push(`            public val modal: ComposeColor = ${toKotlinColor(get("surface.modal"))}`);
+push(`            public val modal: ComposeColor = ${toKotlinColor(get("surface.modal"), "surface.modal")}`);
 push("        }", "");
 
 push("        public object Content {");
 push(...kdocLines("            ", "Default text/icon. Safe on every surface (14.1-18.4:1 measured)."));
-push(`            public val primary: ComposeColor = ${toKotlinColor(get("content.primary"))}`);
+push(`            public val primary: ComposeColor = ${toKotlinColor(get("content.primary"), "content.primary")}`);
 push(...kdocLines("            ", "De-emphasised but informational text. Safe on every surface (5.6-7.3:1)."));
-push(`            public val secondary: ComposeColor = ${toKotlinColor(get("content.secondary"))}`);
+push(`            public val secondary: ComposeColor = ${toKotlinColor(get("content.secondary"), "content.secondary")}`);
 push(
   ...kdocLines(
     "            ",
@@ -379,7 +404,7 @@ push(
     ].join("\n"),
   ),
 );
-push(`            public val tertiary: ComposeColor = ${toKotlinColor(get("content.tertiary"))}`);
+push(`            public val tertiary: ComposeColor = ${toKotlinColor(get("content.tertiary"), "content.tertiary")}`);
 push(
   ...kdocLines(
     "            ",
@@ -390,22 +415,22 @@ push(
     ].join("\n"),
   ),
 );
-push(`            public val disabled: ComposeColor = ${toKotlinColor(get("content.disabled"))}`);
+push(`            public val disabled: ComposeColor = ${toKotlinColor(get("content.disabled"), "content.disabled")}`);
 push(...kdocLines("            ", "Text/icon on any saturated accent or status FILL. Verified 5.14-9.96:1 on all seven."));
-push(`            public val onFill: ComposeColor = ${toKotlinColor(get("content.onFill"))}`);
+push(`            public val onFill: ComposeColor = ${toKotlinColor(get("content.onFill"), "content.onFill")}`);
 push(...kdocLines("            ", "Text/icon on an accent WASH surface (not a fill). Verified 5.20-7.02:1 on all three."));
-push(`            public val onWash: ComposeColor = ${toKotlinColor(get("content.onWash"))}`);
+push(`            public val onWash: ComposeColor = ${toKotlinColor(get("content.onWash"), "content.onWash")}`);
 push("        }", "");
 
 push("        public object Border {");
 push(...kdocLines("            ", "Decorative dividers only. 1.14-1.18:1 -- fails 3:1, legal because it is not a UI-component edge."));
-push(`            public val hairline: ComposeColor = ${toKotlinColor(get("border.hairline"))}`);
+push(`            public val hairline: ComposeColor = ${toKotlinColor(get("border.hairline"), "border.hairline")}`);
 push(...kdocLines("            ", "Default resting border; ALWAYS pair with a fill/elevation difference. 1.44-1.49:1 -- fails 3:1 alone."));
-push(`            public val subtle: ComposeColor = ${toKotlinColor(get("border.subtle"))}`);
+push(`            public val subtle: ComposeColor = ${toKotlinColor(get("border.subtle"), "border.subtle")}`);
 push(...kdocLines("            ", "The sole visual edge of an interactive control (inputs, OutlinedButton). 4.52-4.69:1, clears 3:1."));
-push(`            public val interactive: ComposeColor = ${toKotlinColor(get("border.interactive"))}`);
+push(`            public val interactive: ComposeColor = ${toKotlinColor(get("border.interactive"), "border.interactive")}`);
 push(...kdocLines("            ", "Error-state field border. 5.14-5.33:1. Same primitive as Status.Danger.default, by design."));
-push(`            public val danger: ComposeColor = ${toKotlinColor(get("border.danger"))}`);
+push(`            public val danger: ComposeColor = ${toKotlinColor(get("border.danger"), "border.danger")}`);
 push("        }", "");
 
 push(
@@ -420,9 +445,9 @@ push(
 push("        public object Accent {");
 push(...kdocLines("            ", "DISCOVER mode. Root CLAUDE.md: accent=gold ember/400."));
 push("            public object Discover {");
-push(`                public val default: ComposeColor = ${toKotlinColor(get("accent.discover.default"))}`);
-push(`                public val pressed: ComposeColor = ${toKotlinColor(get("accent.discover.pressed"))}`);
-push(`                public val wash: ComposeColor = ${toKotlinColor(get("accent.discover.wash"))}`);
+push(`                public val default: ComposeColor = ${toKotlinColor(get("accent.discover.default"), "accent.discover.default")}`);
+push(`                public val pressed: ComposeColor = ${toKotlinColor(get("accent.discover.pressed"), "accent.discover.pressed")}`);
+push(`                public val wash: ComposeColor = ${toKotlinColor(get("accent.discover.wash"), "accent.discover.wash")}`);
 push("            }");
 push(
   ...kdocLines(
@@ -434,9 +459,9 @@ push(
   ),
 );
 push("            public object Radar {");
-push(`                public val default: ComposeColor = ${toKotlinColor(get("accent.radar.default"))}`);
-push(`                public val pressed: ComposeColor = ${toKotlinColor(get("accent.radar.pressed"))}`);
-push(`                public val wash: ComposeColor = ${toKotlinColor(get("accent.radar.wash"))}`);
+push(`                public val default: ComposeColor = ${toKotlinColor(get("accent.radar.default"), "accent.radar.default")}`);
+push(`                public val pressed: ComposeColor = ${toKotlinColor(get("accent.radar.pressed"), "accent.radar.pressed")}`);
+push(`                public val wash: ComposeColor = ${toKotlinColor(get("accent.radar.wash"), "accent.radar.wash")}`);
 push("            }");
 push(
   ...kdocLines(
@@ -449,13 +474,13 @@ push(
   ),
 );
 push("            public object Like {");
-push(`                public val default: ComposeColor = ${toKotlinColor(get("accent.like.default"))}`);
-push(`                public val pressed: ComposeColor = ${toKotlinColor(get("accent.like.pressed"))}`);
-push(`                public val wash: ComposeColor = ${toKotlinColor(get("accent.like.wash"))}`);
+push(`                public val default: ComposeColor = ${toKotlinColor(get("accent.like.default"), "accent.like.default")}`);
+push(`                public val pressed: ComposeColor = ${toKotlinColor(get("accent.like.pressed"), "accent.like.pressed")}`);
+push(`                public val wash: ComposeColor = ${toKotlinColor(get("accent.like.wash"), "accent.like.wash")}`);
 push("            }");
 push(...kdocLines("            ", "THREADS: one inbox, favours neither origin. Deliberately neutral, not a hue."));
 push("            public object Threads {");
-push(`                public val default: ComposeColor = ${toKotlinColor(get("accent.threads.default"))}`);
+push(`                public val default: ComposeColor = ${toKotlinColor(get("accent.threads.default"), "accent.threads.default")}`);
 push("            }");
 push("        }", "");
 
@@ -470,10 +495,10 @@ push(
   ),
 );
 push("        public object Status {");
-push(`            public object Success { public val default: ComposeColor = ${toKotlinColor(get("status.success.default"))} }`);
-push(`            public object Warning { public val default: ComposeColor = ${toKotlinColor(get("status.warning.default"))} }`);
-push(`            public object Danger  { public val default: ComposeColor = ${toKotlinColor(get("status.danger.default"))} }`);
-push(`            public object Info    { public val default: ComposeColor = ${toKotlinColor(get("status.info.default"))} }`);
+push(`            public object Success { public val default: ComposeColor = ${toKotlinColor(get("status.success.default"), "status.success.default")} }`);
+push(`            public object Warning { public val default: ComposeColor = ${toKotlinColor(get("status.warning.default"), "status.warning.default")} }`);
+push(`            public object Danger  { public val default: ComposeColor = ${toKotlinColor(get("status.danger.default"), "status.danger.default")} }`);
+push(`            public object Info    { public val default: ComposeColor = ${toKotlinColor(get("status.info.default"), "status.info.default")} }`);
 push("        }");
 push("    }", "");
 
@@ -489,7 +514,7 @@ push(
   ),
 );
 push("    public object Spacing {");
-for (const n of [0, 2, 4, 6, 8, 12, 16, 20, 24, 32, 40, 48, 64, 80]) {
+for (const n of tokens.spacing.scale) {
   push(`        public val space${n}: Dp = ${dp(n)}`);
 }
 push("    }", "");

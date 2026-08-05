@@ -119,6 +119,7 @@ pretends otherwise is the same category of dishonesty as a green battery gate.
 | Android SDK | **platform 35** + build-tools | `ANDROID_HOME` or `ANDROID_SDK_ROOT` **must** be set — `mobile/local.properties` is `.gitignored` (correctly; it holds machine-local absolute paths) and is therefore absent on every runner. `run-stage.sh` preflights this and fails in one second with the fix in the message, instead of failing six minutes into an AGP error. |
 | Node | 20+ | **A build dependency of `:android` itself, not just a gate helper.** `mobile/android/build.gradle.kts` hangs `generateDesignTokens` off `preBuild`, running `mobile/design-tokens/scripts/generate.mjs` — so `tokens.json` is the only place in the repo a colour value exists. Verified by task-graph inspection (`--dry-run`): the generator is in the graph for `testDebugUnitTest`, `lintDebug`, `assembleDebug`, `assembleRelease` **and** `processDebug/ReleaseManifestForPackage`. `:shared`-only work does not pull it. Also needed by `conformance_gate.sh` phase 1 and `battery_gate.sh`. Zero npm dependencies. `run-stage.sh` asserts it per-stage with the reason named. |
 | bash + coreutils + git | any | every gate; `git rev-parse` for repo-root resolution |
+| awk | POSIX | `comment_nesting_gate.sh`'s char-by-char depth scanner (`lib/comment_depth_scan.awk`). Present on every Linux image and in Git Bash; listed because it is the one gate dependency that is not coreutils. |
 | disk | ~15 GB | Gradle caches, SDK, two APK variants (debug ~51 MB, release ~23 MB) |
 
 Gitea runner labels to register: `self-hosted`, `linux`, `android`.
@@ -224,6 +225,18 @@ generator prints `N pairings checked, M regression(s)` on a successful run, so t
 discriminator — **if it is present, the toolchain worked and you are looking at a real finding.**
 Worth knowing that an accessibility regression can now fail an Android build at all; that is a
 deliberate property of generating tokens rather than vendoring them, not a side effect.
+
+**`gate-comment-nesting` (B13) is a special case in the other direction.** Most triage here is
+"is this the runner or the code?". For this one the answer is always **code, until proven
+otherwise.** Its scanner is a char-by-char depth state machine and every documented gap in it fails
+toward a FALSE POSITIVE, never toward hiding a real unclosed comment — so a red result is a claim
+worth believing. Two further reasons not to wave it through: the underlying defect makes the
+compiler report *a different problem in a different place* (in `build.gradle.kts` it swallowed the
+entire `dependencies {}` block and Gradle reported a missing Hilt dependency, no syntax error at
+all), and the gate deliberately does **not** exclude test sources, because the live violation was in
+`iosTest` — the one source set nobody has ever compiled, which would otherwise have surfaced as
+"unclosed comment at EOF" on the first macOS job, ten lines from the cause. If it ever does produce
+a false positive, that is a gate bug to fix, not a stage to skip.
 
 **One-line bisect.** If a failure is ambiguous, flip `runs-on: ubuntu-latest` → `windows-latest` on
 the `android` job in `.github/workflows/ci.yml` and re-run. Windows passes ⇒ runner. Windows also

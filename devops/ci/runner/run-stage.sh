@@ -192,6 +192,20 @@ run_stage() {
       bash devops/ci/gates/the_line_gate.sh ;;
     gate-rssi-egress)
       bash devops/ci/gates/rssi_egress_gate.sh ;;
+
+    # B13. Kotlin block comments NEST (unlike Java's): a literal `/*` inside a KDoc opens a nested
+    # comment, the KDoc's `*/` closes only that one, and the outer comment swallows the file to EOF.
+    # It is a gate rather than a review note because in the worst case the compiler reports a
+    # DIFFERENT PROBLEM IN A DIFFERENT PLACE — in build.gradle.kts it silently ate the whole
+    # `dependencies {}` block and Gradle reported a missing Hilt dependency, not a syntax error.
+    # NOTE FOR TRIAGE: qa-test's scanner is a char-by-char depth state machine, not a regex, and its
+    # documented gaps all fail toward FALSE POSITIVE — never toward hiding a real unclosed comment.
+    # So if this goes red, treat it as REAL until proven otherwise; a false positive is a gate bug to
+    # fix, never a reason to skip the stage. It also deliberately does NOT exclude test sources (the
+    # live violation was in iosTest, the one source set nobody has ever compiled) — do not "tidy"
+    # that exclusion in.
+    gate-comment-nesting)
+      bash devops/ci/gates/comment_nesting_gate.sh ;;
     gate-release-uuid-source)
       bash devops/ci/gates/release_uuid_gate.sh --skip-artifact ;;
 
@@ -304,7 +318,7 @@ run_stage() {
 }
 
 STAGES="gate-selftests gate-no-map-no-bearing gate-internal-escape gate-the-line gate-rssi-egress
-gate-release-uuid-source gate-battery gate-conformance
+gate-comment-nesting gate-release-uuid-source gate-battery gate-conformance
 build-unit-test build-lint build-assemble-debug build-assemble-release gate-release-uuid-artifact
 build-manifests gate-permission"
 
