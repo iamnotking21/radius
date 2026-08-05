@@ -39,8 +39,15 @@ Spot-checked visually, not audited. These are encouraging, not cleared.
 **1. `mobile/design-tokens/` is empty, and the Foundations page is not.**
 Colour, type, spacing, radius and elevation scales all exist in Figma. Every colour currently in the Android theme is a placeholder hex with a `TODO(design-tokens)` against it. Extracting the tokens is cheap, unblocks every future screen, and stops a second set of placeholder values hardening into the codebase. Owner: `design-system`.
 
-**2. The monetization page needs a proper ADR-006 audit, not a glance.**
-What I can see looks compliant — real limits, honest countdowns on a genuinely time-boxed boost, visible cancellation, the no-card gift. But ADR-006's banned list is specific, and "looks fine in a screenshot" is not an audit. Anchoring and per-day framing are *allowed*; fake scarcity, confirmshaming, and obstructed cancellation are not, and the difference is often one line of copy. Owner: `growth-conversion`.
+**2. ~~The monetization page needs a proper ADR-006 audit~~ — DONE 2026-08-05. Decisions 86-93.**
+
+**No banned pattern found.** The countdown is on a genuinely purchased time-boxed product, all three dismissal affordances are neutral, cancellation is one unguarded tap one tap from Settings, and the no-card gift reached the mockup as an actual gift rather than quietly becoming a card-required trial. The spot-check was right about the thing I doubted.
+
+**It was wrong about where the risk was.** The problem is not psychology, it is **claims**: seven factual assertions with no source of truth in the repo. Two must be fixed in Figma before page F is built — "Reveal hidden profiles nearby", which is either a ghost-mode defeat or a paid distance lie, and the word "EXCLUSIVE" on a gift every user receives, which is fabricated scarcity in one word on the one screen whose entire value is that it isn't doing that.
+
+Full detail in `docs/legal/CLAIMS_REGISTER.md` §B2. Three risks live entirely in the build and are invisible in Figma: the gift must be a server-side entitlement grant and **never a trial SKU** (a platform trial *is* an auto-renewing subscription with a card on file, which makes the screen's own copy a lie); cancellation must be an `itms-apps` deep link and **not** a modal explaining where to tap in iOS Settings — same Figma screen either way, ROSCA obstruction in one of them; and entitlement must be server-authoritative.
+
+**And it surfaced a question nobody owns:** there is no price list, no tier feature matrix, and no stated free-tier cap anywhere in this repo. Three F screens already disagree about what Plus includes. That needs a founder answer before F is built, not after.
 
 ## Sequencing note
 

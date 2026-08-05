@@ -47,6 +47,29 @@ Every row is **DESIGN**. `backend/` contains one file — a memory document. The
 | B5 | Deleted accounts are removed from backups | **No deletion pipeline designed.** Continuous WAL plus off-site copies makes this hard, not automatic |
 | B6 | Block is enforced server-side at key resolution | `RadarController.block()` is an unimplemented interface method |
 
+## B2. Claims made by the PAYWALL — added 2026-08-05 after the ADR-006 audit
+
+A paywall is a claims surface, and this one asserts seven facts with **no source of truth anywhere in the repo.** `backend/` holds a single memory file: no price list, no tier feature matrix, no free-tier cap. Getting one of these wrong is a refund, a chargeback, and a store review — not a copy edit.
+
+| # | Claim (Figma page F) | Class | Falsified when |
+|---|---|---|---|
+| P1 | "MOST CHOSEN" on Gold | **UNBACKED** | The moment the tier mix shifts. Must be a live query — plurality by ≥5pp over ≥100 subscriptions, trailing 30d, recomputed daily, **fail-closed**. At launch, with zero subscribers, it is false by construction. |
+| P2 | "SAVE 33% / SAVE 50%" | **UNCHECKABLE** | No total price appears on the screen, so the arithmetic cannot be verified at all. Hardcoding it is worse than getting it wrong: it goes false in every storefront the day a price changes in App Store Connect, with no code change for anyone to notice. |
+| P3 | "$2.49 each / $29.99" and "$4.99 each / $14.99" | **WRONG NOW** | Already false: 12 × 2.49 = $29.88, not $29.99. Both packs truncate rather than round, so both **understate** the real per-item price. Trivial in cents; the tell is that a human typed a figure a machine should have divided. |
+| P4 | "12 comments a day" | **UNSOURCED, and self-contradictory** | Three F screens already disagree about what Plus includes. No repo file states the free allowance. |
+| P5 | "You are being shown to more people right now" (Boost) | **FALSE FOR RADAR** | Radar has no server in the loop — that is the moat. There is no queue to move to the front of. Boost must be Discover-only. |
+| P6 | "Reveal hidden profiles nearby" (Beacon) | **FALSE OR UNSAFE** | See the ruling below. Both readings fail. |
+| P7 | VIEWS / LIKES counters on Boost | **UNDEFINED** | "View" is not in the glossary and does not exist as a concept. It is also the exact shape of the banned invented "someone viewed you" signal. Defining it creates new data collection with a privacy-policy consequence — and if a Radar sighting ever counts as a view, it leaks proximity presence. |
+
+### P6 — the finding worth reading twice
+
+**"1 Hour Beacon — Reveal hidden profiles nearby — $8.99."** The glossary defines a beacon as *transmit-side* boosted visibility. This is *receive-side* copy. Both readings fail:
+
+- **Literally:** "hidden profiles" means people who have hidden themselves. That sells a ghost-mode defeat — invariant 10 — and it cannot even work, since a phone that is not advertising cannot be revealed by anything we sell.
+- **Charitably, and this is worse:** there are exactly two ways to boost BLE visibility. More advertising, which lands on the `<4%/hr` battery contract and the contracted intervals. Or **more TX power — which raises the RSSI a peer computes, and therefore shifts the band it displays.** That is a *paid distance lie*.
+
+Register row A1 does not defend against this. **A1 stops *us* inferring distance from RSSI. It says nothing about us being paid to corrupt the RSSI upstream of the honest maths.** Decision 87 blocks the copy until `ble-protocol` rules on what a Beacon may physically be.
+
 ## C. Structural gaps — claims with nothing holding them up
 
 | Gap | Missing | Consequence |

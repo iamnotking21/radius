@@ -82,6 +82,13 @@ DEFERRED: all iOS · Mac · Carrier B validation · B7 · relay-only calling (G5
   sections + foundations. Raises two follow-ups: design-tokens is EMPTY while the Foundations
   page is not (placeholder hexes are hardening in the Android theme), and page F monetization
   needs a real ADR-006 audit rather than the visual spot-check I did.
+  [F AUDITED 2026-08-05 growth-conversion] done — decisions 86-93. NO banned pattern found;
+  6 unverifiable/false CLAIMS found instead. 2 must be fixed in Figma BEFORE F is built:
+  "Reveal hidden profiles nearby" (row 87) and "EXCLUSIVE PRESENT" (row 91). design-tokens
+  follow-up stands, unaffected.
+- WHO OWNS THE FREE-TIER NUMBERS? no repo file states the free comment cap, the tier feature
+  matrix, or a single price. three F screens already disagree with each other about what Plus
+  includes. needs a founder answer before F1/F2 are built, not after.
 - SMS provider after email OTP · moderator staffing
 
 ## LOG
@@ -149,6 +156,39 @@ DEFERRED: all iOS · Mac · Carrier B validation · B7 · relay-only calling (G5
   Kept: decision-61 lock discipline, no lock across a suspension point, AdvertiseGuard parity.
   114 tests green incl conformance vectors; lintDebug clean. STILL ZERO RADIO EVIDENCE — every fix
   here is desk work and the numbers this instrument produces are still unmeasured.
+2026-08-05 growth-conversion · ADR-006 audit of Figma F/monetization, all 7 screens, every string
+  read at 12x rather than at strip scale. Decisions 86-93. HEADLINE: the founder's spot-check was
+  right about the thing he doubted and wrong about where the risk was. ZERO banned patterns —
+  the 22:47 countdown is on a real purchased 30-min product, all three dismissals are neutral
+  ("Not Now" / "Maybe later" / "Close Status"), cancellation is one unguarded tap on a screen that
+  is itself one tap from Settings, and E7 reached the mockup as a gift instead of quietly becoming
+  a card-required trial. What the page actually fails is CLAIM-TRUTH: it makes seven factual
+  assertions and not one has a source of truth in this repo.
+  Three worth keeping:
+  (a) the store maths is wrong in both packs, in the SAME DIRECTION. "$2.49 each" x12 = $29.88 but
+  the pack is $29.99; "$4.99 each" x3 = $14.97 but the pack is $14.99. Both are the true unit price
+  TRUNCATED ($2.4992, $4.9967) rather than rounded, so both understate what the buyer pays per item.
+  Eleven cents — and it is the tell: a per-unit figure was typed by a human instead of divided by a
+  machine, which is the same hand that will type "SAVE 50%" into a storefront where Apple's price
+  tiers do not preserve the ratio.
+  (b) "1 Hour Beacon · Reveal hidden profiles nearby" is the one item I would block. 50-glossary
+  defines beacon as boosted Radar VISIBILITY — a transmit-side product sold with receive-side copy.
+  The read-it-literally version sells a ghost-mode defeat (invariant 10) that cannot even function.
+  The charitable version is worse than it first looks: boosting BLE visibility means TX power or
+  advertising rate, and MORE TX POWER RAISES THE RSSI A PEER COMPUTES AND THEREFORE SHIFTS THE BAND
+  IT SHOWS. That is a paid distance lie. CLAIMS_REGISTER A1 does not defend it — A1 stops us
+  inferring distance from RSSI, not us being paid to corrupt the RSSI upstream of the honest maths.
+  (c) F1 has the 6-month "SAVE 33%" chip selected while the CTA reads "Continue with Gold
+  ($29.99/mo)" — the 1-month price. The price of the selected thing is on no screen, and the total
+  charged for a 6/12-month term appears nowhere on the purchase surface at all. The renewal footnote
+  itself is present, unlinked and honest, but sits BELOW the CTA in the smallest, lowest-contrast
+  type on the page; it survives "above the fold" only because this Figma frame is a tall device.
+  At 375x667 (iPhone SE, our min-iOS16 floor) that content scrolls and the disclosure leaves the
+  viewport. Pin it above the button and layout-test at 667pt.
+  NOT FOUND, and looked for specifically: fatigue rules, the 24h-after-report suppression, and the
+  founder honesty check (paying vs free conversation + reply rate). Correctly absent — they are
+  logic and an admin surface, not phone screens — but they have no home in the repo either, so
+  nothing yet distinguishes "not drawn" from "not built".
 2026-08-05 android-kotlin · finding 8 ruling applied (orchestrator corrected decision row 60, not me).
   Epoch ticker predicate is now EpochTickerPolicy.wanted() in commonMain, called by both actuals;
   desiredScan dropped out entirely. Ghost mode — one tap, the highest-signal privacy assertion in
