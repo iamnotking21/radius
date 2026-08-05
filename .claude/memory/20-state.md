@@ -7,14 +7,16 @@ phase: 0 — BLE feasibility spike. CODE COMPLETE to the limit of this machine.
 blocking-everything: ZERO hardware measurement exists. go/no-go memo has an empty results table.
 mobile arch: KOTLIN MULTIPLATFORM shared core + native UI (ADR-007). ANDROID FIRST, iOS deferred.
 repo: github.com/iamnotking21/radius · main · PUBLIC · CI green on ubuntu-latest
-infra: not provisioned. backend/ and website/ contain one memory file each. ~4% of v1.
+infra: not provisioned. backend/ and website/ contain one memory file each. ~6% of v1.
+  (9.4k lines Kotlin · 1.2k Swift · 0 Go · 0 TS · 0 design tokens · 0 proto · 0 migrations)
 contracts: proto v0 NOT locked · shared API v0.1 GATED · BLE wire v0.1 written, 0/16 cells measured
 hires: 0/2 BLE specialists
 
 ## VERIFIED — by a compiler or the GitHub API, not by assertion
 build: Temurin JDK21 · wrapper 8.13 · AGP 8.9 · Kotlin 2.1.20 · SDK 35
   :shared + :android compile · assembleDebug + assembleRelease (R8) · lint 0 errors
-  63 unit tests · 116 conformance vectors executing · 80 gate self-test assertions
+  89 unit tests (was 63; +26 for the spike measurement maths) · 116 conformance vectors executing ·
+  80 gate self-test assertions
 CI: run 4 fully green, all 3 jobs, ubuntu-latest. Android toolchain proven on Linux.
   CI has already caught one real bug local testing structurally could not (a Windows-only
   assertion inside the fix for a Windows-only hardcode).
@@ -22,7 +24,8 @@ gates (8): conformance · invariant-1 map/bearing (now incl backend+website) · 
   THE LINE · RSSI egress · merged-manifest permissions · 0xFDA9 release · battery
   0xFDA9 + battery are KNOWN-RED BY DESIGN and use xfail: they go red on GOOD news.
 structural proofs: 0 INTERNET permission in merged manifest, both variants ⇒ the app cannot
-  open a socket. Spike harness absent from release (69 classes debug, 0 release).
+  open a socket. Spike harness absent from release (105 classes debug, 0 release — re-checked
+  across all 17 debug dex files after the P1/P2/§5.0 extension).
 
 ## STILL UNVERIFIED — do not confuse with the above
 every BLE behaviour · battery · discovery latency · band accuracy · all of iOS · anything
@@ -38,6 +41,10 @@ B5 CLOSED · B10 CLOSED (ADR-008) · B11/B12 CLOSED
 - [x] ADR 001-009. ADR-007 KMP supersedes 001 in part. ADR-008 server-issued key. ADR-009 CI.
 - [x] BLE wire spec v0.1 + 116 vectors + single Kotlin codec, security-reviewed
 - [x] Real Android radio + Phase 0 spike harness (bijection screen, honest raw logging)
+- [x] Spike harness EXTENDED to the three remaining Phase 0 measurements — P1 battery (+radio-state
+      attribution), P2 discovery latency (UTC-aligned probe + 4 stacked clock-skew controls),
+      SPEC §5.0 acquisition rate + peer density. src/debug only, no INTERNET, adb-pull only.
+      qa-test's PHASE0_SPIKE_MATRIX §1 instrumentation blocker is CLEARED.
 - [x] 8 CI gates + green pipeline on GitHub Actions
 - [x] Security review PASS-WITH-FIXES, all 5 landed incl the HIGH (key destruction at seam)
 - [x] docs/PHASE0_GO_NO_GO.md — thresholds pre-committed BEFORE any data exists
@@ -50,6 +57,13 @@ B5 CLOSED · B10 CLOSED (ADR-008) · B11/B12 CLOSED
 - [ ] nothing. every remaining item needs hardware, money, or a founder decision.
 
 ## NEXT — ANDROID FIRST
+0. NOTE FOR THE PHONE PURCHASE, NEW 2026-08-05: buy at least TWO handsets on **Android 13+**.
+   The independent clock-skew error bar for discovery latency (P2) uses
+   `SystemClock.currentNetworkTimeClock()`, which is **API 33**, not our API 29 floor. On Android
+   10/11/12 — i.e. much of the budget MediaTek tier the matrix tests FIRST — it does not exist, and
+   the paired-sum estimator over two mutually-advertising phones becomes the ONLY skew control.
+   That still works, but it means a latency run on a single advertising handset there has NO bound
+   on its error. Does not change the shopping list; does change how the runs are paired.
 1. HUMAN: 3-4 Android phones across chipset vendors, budget MediaTek FIRST (~$400-600).
    dongles (~$35) DEFERRED — needed only if the phone result comes back clean (decisions 68/69).
 2. qa-test: run the spike matrix. RPA co-rotation FIRST — only item unfixable after the fact.
@@ -94,3 +108,14 @@ DEFERRED: all iOS · Mac · Carrier B validation · B7 · relay-only calling (G5
   Both found real bugs only by testing against LIVE artifacts rather than fixtures — a
   case-sensitive pattern blind to Go's exported fields, and a `tr '\x01'` this runner treats
   as four literal characters.
+2026-08-05 android-kotlin · spike harness extended to P1/P2/SPEC-5.0. Three findings worth keeping:
+  (a) the obvious latency formulation `t mod CYCLE` is floorMod and CANNOT return a negative — so
+  the free "a packet cannot arrive before it was sent" skew detector would have silently not
+  existed, and a mis-clocked run would have looked merely disappointing. Fixed with bounded
+  next-cycle attribution.
+  (b) the latency probe's own once-a-minute advertising restart rotates OUR address inside a
+  protocol epoch, which is the exact shape of a §4.3.1 bijection failure. A latency run is now
+  VOID for B8 in the header, on screen, and in the integrity note — the instrument would otherwise
+  have manufactured the project's top-severity finding.
+  (c) lintDebug caught `currentNetworkTimeClock()` being API 33 while the KDoc claimed API 29.
+  Would have crashed on the first budget handset. See NEXT item 0.

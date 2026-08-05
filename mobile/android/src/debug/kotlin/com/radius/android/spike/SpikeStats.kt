@@ -66,20 +66,145 @@ internal data class SpikeStats(
     val diagnosticsDropped: Long = 0L,
     val writeFailures: Long = 0L,
     val lastEventLine: String = "",
+
+    // ---------------------------------------------------------------------------------------------
+    // WHICH QUESTION THIS RUN IS ANSWERING. See SpikeMode — the three measurements are mutually
+    // hostile and each produces a plausible-looking file under the wrong mode.
+    // ---------------------------------------------------------------------------------------------
+    val mode: SpikeMode = SpikeMode.CAPTURE,
+    val modeHeadline: String = "",
+
+    // ---------------------------------------------------------------------------------------------
+    // go/no-go P1 — BATTERY. Every field here is WHOLE-DEVICE, not app. See SpikeBattery.kt.
+    // ---------------------------------------------------------------------------------------------
+    val batterySamples: Long = 0L,
+    val batteryLevelPct: Int = -1,
+    val batteryLevelDeltaPct: Int = 0,
+    val batteryChargeDeltaUah: Long = 0L,
+    val batteryTemperatureDeciC: Int = -1,
+    val batteryPlugged: Boolean = false,
+    val batteryEverPlugged: Boolean = false,
+    val batteryScreenInteractive: Boolean = false,
+    val batteryDeviceIdle: Boolean = false,
+    val batteryPowerSave: Boolean = false,
+    /** Null until enough of the run has elapsed to fit a slope through. Deliberately not zero. */
+    val percentPerHourFromLevel: Double? = null,
+    val percentPerHourFromCharge: Double? = null,
+    val batteryInvalidReason: String = "",
+
+    /**
+     * HOST-REQUESTED radio time, not receiver-on time. The value that makes a %/hr figure
+     * attributable rather than a story. See SpikeDutyLedger.kt for the size of the caveat.
+     */
+    val scanOnMs: Long = 0L,
+    val advertiseOnMs: Long = 0L,
+    val scanOnPct: Int = 0,
+    val scanOpenTransitions: Long = 0L,
+    val nominalScanDutyPct: Int = 0,
+    val scanModeName: String = "-",
+
+    // ---------------------------------------------------------------------------------------------
+    // go/no-go P2 — DISCOVERY LATENCY. Every value UNCORRECTED for inter-device clock offset.
+    // ---------------------------------------------------------------------------------------------
+    val latencySamples: Long = 0L,
+    val latencyP50Ms: Long? = null,
+    val latencyP95Ms: Long? = null,
+    /** A NEGATIVE value is direct, model-free proof of clock skew of at least that size. */
+    val latencyMinMs: Long? = null,
+    val latencyMaxMs: Long? = null,
+    val latencyAfterOnWindow: Long = 0L,
+    val latencyMissedPeerCycles: Long = 0L,
+    /** This device's own transmit-side lag from cycle start, on ONE clock. Subtractable honestly. */
+    val emitStartLagMs: Long = -1L,
+    val networkTimeAvailable: Boolean = false,
+    /** Which of the three network-time states this handset is in. See SpikeClockReference. */
+    val networkTimeSource: String = "",
+
+    // ---------------------------------------------------------------------------------------------
+    // SPEC §5.0 — ACQUISITION RATE and PEER DENSITY.
+    // ---------------------------------------------------------------------------------------------
+    val densityBuckets: Long = 0L,
+    val distinctPeersTotal: Int = 0,
+    /** "Heard from in the last PEER_LIVENESS_MS", not an observation of concurrency. */
+    val concurrentPeers: Int = 0,
+    val peakConcurrentPeers: Int = 0,
 ) {
     /**
      * The one-line verdict on whether the capture is usable at all. Deliberately worded so that a
      * degraded run is not silently treated as a clean one.
+     *
+     * ORDER MATTERS AND IS NOT ARBITRARY. Our own losses come first, because a run with holes we
+     * made cannot support ANY conclusion of the form "X never happened" — which is the shape of
+     * both B8 and `SPEC.md` §5.0. Mode-voiding comes next, because it invalidates a specific
+     * counter rather than the whole file. Only then does the file get to report a finding.
      */
     val integrityNote: String
         get() = when {
             diagnosticsDropped > 0L || writeFailures > 0L ->
                 "DEGRADED — $diagnosticsDropped dropped, $writeFailures write failures. " +
                     "Gaps in this file are OURS. Treat absence claims as void."
+            mode == SpikeMode.LATENCY_PROBE && (bridgedAddresses > 0 || bridgedEids > 0) ->
+                "BRIDGING COUNTERS VOID IN THIS MODE — the latency probe stops and restarts our " +
+                    "own transmitter once per cycle, which rotates our address INSIDE a protocol " +
+                    "epoch. $bridgedEids bridged eids here is self-inflicted, not a B8 finding. " +
+                    "Re-run in CAPTURE mode to test §4.3.1."
             bridgedAddresses > 0 || bridgedEids > 0 ->
                 "BRIDGING OBSERVED — $bridgedAddresses addr, $bridgedEids eid. " +
                     "Invariant 5 fails on this hardware. Confirm on a sniffer, then §4.3.4."
+            mode == SpikeMode.BATTERY_BASELINE ->
+                "BASELINE — radio deliberately off. Zero sightings is correct. This run is the " +
+                    "SUBTRAHEND for a scanning run, not an answer on its own."
             sightings == 0L -> "NO SIGHTINGS YET"
             else -> "no bridging observed so far — NOT a pass, see §5.1"
+        }
+
+    /**
+     * The battery verdict, in the same never-flatter-ourselves style.
+     *
+     * Returns a reason to distrust the number when there is one, and when there is not, still says
+     * what the number is missing: whole-device drain is not app drain and there is no way to make it
+     * one from a single run.
+     */
+    val batteryNote: String
+        get() = batteryInvalidReason.ifEmpty {
+            buildString {
+                append("Whole-device drain, unplugged, ")
+                append(if (batteryScreenInteractive) "SCREEN ON" else "screen off")
+                append(". Subtract a paired BATTERY BASELINE run on this handset to get Radar's ")
+                append("own cost. scan_on=")
+                append(scanOnMs / 1000)
+                append("s (")
+                append(scanOnPct)
+                append("% of run, HOST-REQUESTED — controller duty nominally ")
+                append(nominalScanDutyPct)
+                append("%).")
+            }
+        }
+
+    /**
+     * The latency verdict. Never prints a percentile without the correction warning attached, and
+     * escalates when the device has itself observed proof of skew.
+     */
+    val latencyNote: String
+        get() = when {
+            mode != SpikeMode.LATENCY_PROBE ->
+                "Not measured in this mode. Latency needs the peer's transmitter on a known " +
+                    "schedule — switch to LATENCY PROBE on BOTH handsets."
+            latencySamples == 0L ->
+                "No samples yet. Each cycle yields at most one per peer, so expect roughly one " +
+                    "per minute per peer once both phones are running."
+            (latencyMinMs ?: 0L) < 0L ->
+                "CLOCK SKEW PROVEN: a first sighting arrived ${-(latencyMinMs ?: 0L)}ms BEFORE " +
+                    "the cycle it belongs to. A packet cannot arrive before it was sent, so these " +
+                    "clocks differ by at least that much and every p50 below is wrong by at least " +
+                    "that much. Correct with the paired-sum estimator over both devices' files."
+            !networkTimeAvailable ->
+                "UNCORRECTED, AND NO INDEPENDENT ERROR BAR ON THIS HANDSET. $networkTimeSource " +
+                    "The paired-sum estimator over BOTH devices' latency.csv is the only skew " +
+                    "control left, and it needs both phones advertising."
+            else ->
+                "UNCORRECTED for the clock offset between handsets. Subtract it off-device — " +
+                    "paired-sum over both latency.csv files, or the two network offsets in " +
+                    "meta.json. See SpikeLatency.kt."
         }
 }

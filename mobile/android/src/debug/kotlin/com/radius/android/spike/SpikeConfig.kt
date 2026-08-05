@@ -28,6 +28,9 @@ import com.radius.shared.ble.DutyProfile
  *   yield (≥60 % of expected packets) is unreachable at the contracted 25 % duty, so a
  *   co-rotation capture and a battery capture cannot be the same run. Recorded in the run header
  *   so the two can never be confused after the fact.
+ * @property mode which Phase 0 question this run answers. See [SpikeMode] — the three measurements
+ *   are mutually hostile and each produces a plausible-looking file under the wrong mode, so the
+ *   mode is declared up front and written into the header rather than inferred later.
  */
 internal data class SpikeConfig(
     val deviceSlot: Int = 1,
@@ -37,11 +40,20 @@ internal data class SpikeConfig(
     val txPowerCalDbm: Int = -60,
     val duty: DutyProfile = DutyProfile.FOREGROUND,
     val maxCapture: Boolean = false,
+    val mode: SpikeMode = SpikeMode.CAPTURE,
 ) {
     val scanModeOverride: Int?
         get() = if (maxCapture) ScanSettings.SCAN_MODE_LOW_LATENCY else null
 
+    /**
+     * Whether a battery figure from this run may be quoted at all, before the run has even started.
+     *
+     * `maxCapture` is the historical trap (decision 44). [SpikeMode.BATTERY_BASELINE] is not
+     * invalid — it is the SUBTRAHEND, and [BatteryDrainEstimator.invalidReason] says so in words.
+     */
+    val batteryFiguresValid: Boolean get() = !maxCapture
+
     fun describe(): String =
-        "slot=$deviceSlot resolve=${resolveSlots.sorted()} advertise=$advertise " +
+        "mode=$mode slot=$deviceSlot resolve=${resolveSlots.sorted()} advertise=$advertise " +
             "connectable=$connectable txCal=${txPowerCalDbm}dBm duty=$duty maxCapture=$maxCapture"
 }

@@ -19,6 +19,7 @@ Do not tune anything to make a number look better. If something breaks, write do
 **What you need:**
 
 - 2 Android phones minimum, 3-4 better, on **different chipset vendors**. Include a cheap MediaTek device — that's where the privacy feature is most likely to fail, and testing flagships first is backwards because they're the ones most likely to pass.
+- **At least two of them on Android 13 or newer.** The independent clock-check used by the latency test only exists from Android 13. On older phones you can still measure latency, but only by running two phones against each other — see Step 4. This does not change what to buy, it changes which phones you pair.
 - A USB cable for each.
 - A laptop with the project checked out and `adb` available (it's in the Android SDK you already have, under `platform-tools`).
 - A notebook. Genuinely — a paper notebook. You will be walking around holding two phones.
@@ -95,21 +96,42 @@ adb exec-out "run-as com.radius.android.debug tar c files/spike" > spike-PHONENA
 
 Do this for every run, on every phone. Name the files after the phone. The raw capture is the evidence; the on-screen counter is only a preview.
 
+**The phone tells you the procedure too.** Each mode renders its own step-by-step on screen, and the `adb pull` command is printed there — because you will be in a car park, not at a laptop. The last section of that screen also lists which numbers stand on their own and which need a second phone or a dongle to mean anything. **Read that table before trusting any figure.**
+
 ---
 
-## Step 4 — Discovery latency and battery
+## Step 4 — Discovery latency (mode: LATENCY_PROBE)
 
 Only after Step 3 is done for every phone.
 
-**Latency:** how long from one phone starting to advertise until the other sees it. Target is under 5 seconds in the foreground. Repeat it many times — a single measurement is noise.
+**Do not mix this with Step 3.** A latency run restarts the transmitter once a minute, and on some phones that changes the Bluetooth address mid-cycle — which looks exactly like the B8 failure you are hunting. **The app marks latency runs as VOID for B8 automatically**, on screen and in the data file, so you cannot accidentally report one as the other. Different runs, different purpose.
 
-**Battery:** charge one phone to 100%, run a scan-only session for a measured period, record the drop. Target is under 4% per hour while scanning.
+**Procedure:** two phones, different slots, each set to resolve the other. **Advertising ON on both** — that symmetry is what cancels the clock difference between them. Turn Automatic date & time ON on both. Then just start them; they synchronise themselves from the clock, so there is no countdown to tap and no reaction time to worry about.
 
-**One caution on battery.** The scan mode was recently corrected from a setting that ran the radio at 100% duty against a contracted 30%. Any battery figure taken from an older build is meaningless. Make sure you built from current `main`.
+Run 30 minutes minimum, an hour is better. **Pull the folder from both phones** — the calculation needs both halves.
+
+**Watch the MIN LATENCY figure.** If it goes negative, that is shown in red, and it means the two phones' clocks disagree by at least that much. A packet cannot arrive before it was sent, so a negative number is proof of clock skew, not of a fast connection.
+
+## Step 5 — Battery (modes: BATTERY_BASELINE, then CAPTURE)
+
+**Two runs, and the answer is the difference.** A single run measures the whole phone, not our app.
+
+1. `adb shell dumpsys batterystats --reset`
+2. Run **BATTERY_BASELINE** for at least 60 minutes, unplugged. The radio never starts; everything else does.
+3. `adb bugreport` — this is the baseline.
+4. Now run the **identical** session in CAPTURE mode. Same phone, same screen state, same duration.
+
+The gap between the two is what Radar actually costs. Target is under 4% per hour while scanning.
+
+**One caution.** The scan mode was recently corrected from a setting that ran the radio at 100% duty against a contracted 30%. **Any battery figure from an older build is meaningless.** Build from current `main`.
+
+## Step 6 — Peer density
+
+Passive — it records during every other mode, so you get it for free from the runs above. 1 and 5 peers you can do with the phones you have. 15 and 30 concurrent peers need the dongles.
 
 ---
 
-## Step 5 — Walk around
+## Step 7 — Walk around
 
 The table test is the controlled case. The product lives in the world.
 

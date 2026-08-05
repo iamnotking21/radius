@@ -1050,6 +1050,14 @@ public actual class BleRadio(
         // value AND delete it from this block, so that the set of things still being guessed is
         // always visible at a glance. A constant that has moved out of this block has been
         // measured; a constant still in it has not.
+        //
+        // THIS BLOCK HAS A SECOND HALF, IN ANOTHER FILE, AND YOU NEED BOTH. The Phase 0 harness
+        // constants (battery sample period, latency probe cycle/ON window, density bucket, peer
+        // liveness window, nominal duty percentages) live in
+        // `mobile/android/src/debug/kotlin/com/radius/android/spike/SpikeTiming.kt`, under the same
+        // banner and the same rule. They are separate ONLY because those constants do not ship and
+        // these do. Two places to look, stated here rather than discovered by someone who thought
+        // this block was the whole set.
         // =====================================================================================
 
         /**

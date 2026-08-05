@@ -23,9 +23,11 @@ import com.radius.shared.protocol.ProtocolResult
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.security.SecureRandom
 import javax.inject.Inject
@@ -104,6 +106,31 @@ internal class SpikeController @Inject constructor(
     private var adapterEvents = 0L
     private var lastEventLine = ""
 
+    // --- the three Phase 0 measurements this class was extended to record. Each one lives in its
+    // own file with its own argument about what it can and cannot claim; this class only drives
+    // them and writes their rows down.
+    private val batteryReader = SpikeBatteryReader(context)
+    private val drain = BatteryDrainEstimator()
+    private val latency = LatencyTracker()
+    private val densityAccumulator = DensityAccumulator()
+    private val duty = SpikeDutyLedger()
+
+    private var batterySamples = 0L
+    private var latencyRowsWritten = 0L
+    private var densityBucketsWritten = 0L
+    private var concurrentPeersNow = 0
+    private var emitStartLagMs = -1L
+
+    /**
+     * Held so the latency probe can stop and restart the SAME advertisement each cycle without
+     * rebuilding the payload source. The source itself is stateless by construction
+     * (`AdvertisePayloadSource` takes the epoch as a parameter), so restarting cannot resurrect a
+     * stale frame — that is the whole reason the port takes a supplier rather than bytes.
+     */
+    private var advertiseRequest: AdvertiseRequest? = null
+
+    private var startClock: SpikeClockReference? = null
+
     private val lock = Any()
 
     /** Per-run, never persisted, never transmitted. `BANDING.md` §6.2. */
@@ -147,20 +174,55 @@ internal class SpikeController @Inject constructor(
 
         val runId = SpikeWriter.newRunId()
         val w = SpikeWriter(context, runId)
-        w.open(
-            config = cfg,
-            radioNotes = mapOf(
-                "availability" to radio.availability.value.name,
-                "peripheral_role_supported" to radio.peripheralRoleSupported.toString(),
-                "multiple_advertisement_supported" to radio.multipleAdvertisementSupported.toString(),
-                "service_uuid16" to SERVICE_UUID_HEX,
-                "service_uuid16_status" to "PROVISIONAL, NOT SIG-ALLOCATED, MUST NOT SHIP (SPEC §4.1)",
-                "frame_bytes" to BleFrameCodec.FRAME_LENGTH_BYTES.toString(),
-                "carrier_a_bytes" to AdvertisementCodec.CARRIER_A_LENGTH_BYTES.toString(),
-            ),
-        )
+
+        // THE CLOCK REFERENCE, TAKEN BEFORE ANYTHING ELSE. Two handsets, two clocks, and every
+        // cross-device number in this run is wrong by their difference until somebody subtracts it.
+        // Recorded at start and again at stop so the DRIFT over the run is visible, which is the
+        // error bar on that subtraction. See SpikeLatency.kt METHOD 3.
+        val clockAtStart = SpikeClockReference.capture()
+        startClock = clockAtStart
+
+        val notes = LinkedHashMap<String, String>()
+        notes["availability"] = radio.availability.value.name
+        notes["peripheral_role_supported"] = radio.peripheralRoleSupported.toString()
+        notes["multiple_advertisement_supported"] = radio.multipleAdvertisementSupported.toString()
+        notes["service_uuid16"] = SERVICE_UUID_HEX
+        notes["service_uuid16_status"] = "PROVISIONAL, NOT SIG-ALLOCATED, MUST NOT SHIP (SPEC §4.1)"
+        notes["frame_bytes"] = BleFrameCodec.FRAME_LENGTH_BYTES.toString()
+        notes["carrier_a_bytes"] = AdvertisementCodec.CARRIER_A_LENGTH_BYTES.toString()
+        notes["scan_mode_effective"] =
+            SpikeTiming.scanModeName(SpikeTiming.effectiveScanMode(cfg))
+        notes["scan_duty_nominal_pct"] =
+            SpikeTiming.nominalScanDutyPct(SpikeTiming.effectiveScanMode(cfg)).toString()
+        notes["scan_duty_caveat"] =
+            "NOMINAL AOSP value. Several OEMs ship their own windows. Host-level scan_on_ms is " +
+                "REQUESTED radio time, not receiver-on time — see SpikeDutyLedger.kt."
+        clockAtStart.describe("clock_start").forEach { (k, v) -> notes[k] = v }
+        batteryReader.capabilities().forEach { (k, v) -> notes[k] = v }
+
+        w.open(config = cfg, radioNotes = notes)
         writer = w
         startedAtMillis = System.currentTimeMillis()
+        duty.start()
+
+        record(
+            EventKind.CONTROL,
+            "run ${runId} mode=${cfg.mode} — ${SpikeProcedure.headline(cfg.mode, cfg.maxCapture)}",
+        )
+
+        if (!cfg.mode.usesRadio) {
+            // BATTERY_BASELINE. The radio is never started: no scan, no advertisement, no
+            // diagnostics stream. The battery sampler and the foreground service run, and nothing
+            // is on the air. That is the whole experiment — see SpikeMode.BATTERY_BASELINE.
+            record(
+                EventKind.CONTROL,
+                "BATTERY BASELINE — radio deliberately NOT started. Zero sightings is the correct " +
+                    "result for this mode, not a failure.",
+            )
+            jobs += scope.launch { batterySamplerLoop() }
+            publish(running = true)
+            return
+        }
 
         radio.setDiagnosticsEnabled(true, "phase-0 spike harness, run $runId")
         radio.setScanModeOverride(cfg.scanModeOverride, "spike maxCapture=${cfg.maxCapture}")
@@ -207,22 +269,214 @@ internal class SpikeController @Inject constructor(
             // grant arrives with key issuance (KEY_SCHEDULE.md §2.2), which needs a server that
             // does not exist yet (B3).
             radio.setAdvertiseRole(AdvertiseRole.ADVERTISE, AdvertiseRoleSource.DEBUG_SPIKE_HARNESS)
-            val adv = radio.startAdvertising(
-                AdvertiseRequest(
-                    payloadSource = spikePayloadSource(cfg),
-                    serviceUuid16 = SERVICE_UUID_HEX,
-                    duty = cfg.duty,
-                ),
+            val request = AdvertiseRequest(
+                payloadSource = spikePayloadSource(cfg),
+                serviceUuid16 = SERVICE_UUID_HEX,
+                duty = cfg.duty,
             )
-            record(EventKind.CONTROL, "startAdvertising -> $adv")
+            advertiseRequest = request
+
+            if (cfg.mode == SpikeMode.LATENCY_PROBE) {
+                // DO NOT start advertising here. The probe owns the transmitter from now on and
+                // starts it at the next UTC-aligned cycle boundary, so that the scanner's notion of
+                // "the peer started transmitting at T" is derived from an absolute schedule rather
+                // than from when somebody pressed a button. See SpikeLatency.kt METHOD 1.
+                record(
+                    EventKind.CONTROL,
+                    "latency probe owns the transmitter: cycle=${SpikeTiming.LATENCY_CYCLE_MS}ms " +
+                        "on=${SpikeTiming.LATENCY_ON_MS}ms, UTC-aligned, no operator action",
+                )
+                jobs += scope.launch { latencyEmitterLoop() }
+            } else {
+                val adv = radio.startAdvertising(request)
+                record(EventKind.CONTROL, "startAdvertising -> $adv")
+            }
         } else {
             // Belt and braces on top of the radio's own default. Decision 35 is the control that
             // stops two devices broadcasting one identity, so it gets two independent closed doors.
             radio.setAdvertiseRole(AdvertiseRole.SCAN_ONLY, AdvertiseRoleSource.DEBUG_SPIKE_HARNESS)
             record(EventKind.CONTROL, "scan-only: no advertise role requested")
+            if (cfg.mode == SpikeMode.LATENCY_PROBE) {
+                record(
+                    EventKind.CONTROL,
+                    "LATENCY PROBE, SCAN SIDE ONLY. The paired-sum estimator that cancels clock " +
+                        "skew exactly needs BOTH handsets advertising. This run yields " +
+                        "one-directional, skew-biased numbers only.",
+                )
+            }
         }
 
+        jobs += scope.launch { batterySamplerLoop() }
+        jobs += scope.launch { densityBucketLoop() }
+
         publish(running = true)
+    }
+
+    // -------------------------------------------------------------------------------------------
+    // measurement loops
+    // -------------------------------------------------------------------------------------------
+
+    /**
+     * go/no-go **P1**. One battery row per [SpikeTiming.BATTERY_SAMPLE_MS], each carrying the radio
+     * state at that instant. See `SpikeBattery.kt` for why the two are never separable afterwards.
+     *
+     * The FIRST sample is taken immediately, before any delay: a run that dies after four minutes
+     * still needs a t=0 point, or its one surviving sample is a level with nothing to subtract from.
+     */
+    private suspend fun batterySamplerLoop() {
+        while (kotlin.coroutines.coroutineContext.isActive) {
+            sampleBattery()
+            delay(SpikeTiming.BATTERY_SAMPLE_MS)
+        }
+    }
+
+    private fun sampleBattery() {
+        val w = writer ?: return
+        val cfg = _config.value
+        val sample = batteryReader.read()
+        val n = synchronized(lock) { ++batterySamples }
+        drain.add(sample)
+
+        val scanMode = SpikeTiming.effectiveScanMode(cfg)
+        val validForDrain = cfg.batteryFiguresValid && !sample.plugged
+
+        w.appendBatteryCsv(
+            listOf(
+                n.toString(),
+                sample.wallUtcMs.toString(),
+                SpikeWriter.isoUtc(sample.wallUtcMs),
+                (sample.wallUtcMs - startedAtMillis).toString(),
+                sample.levelPct.toString(),
+                sample.rawLevel.toString(),
+                sample.scale.toString(),
+                sample.chargeCounterUah.toString(),
+                sample.currentNowUa.toString(),
+                sample.energyCounterNwh.toString(),
+                sample.voltageMv.toString(),
+                sample.temperatureDeciC.toString(),
+                sample.pluggedName,
+                sample.pluggedRaw.toString(),
+                sample.statusName,
+                sample.healthRaw.toString(),
+                sample.screenInteractive.toString(),
+                sample.powerSaveMode.toString(),
+                sample.deviceIdleMode.toString(),
+                cfg.mode.name,
+                cfg.duty.name,
+                SpikeTiming.scanModeName(scanMode),
+                SpikeTiming.nominalScanDutyPct(scanMode).toString(),
+                cfg.maxCapture.toString(),
+                duty.scanning.toString(),
+                duty.advertising.toString(),
+                radio.advertiseState.value.status.name,
+                duty.scanOnMs().toString(),
+                duty.advertiseOnMs().toString(),
+                duty.scanOpenTransitions.toString(),
+                sightingCount.toString(),
+                densityAccumulator.distinctPeersEver.toString(),
+                concurrentPeersNow.toString(),
+                radio.diagnosticsDropped.toString(),
+                w.writeFailures.toString(),
+                validForDrain.toString(),
+            ).joinToString(",") { csvCell(it) },
+        )
+        publish(running = _stats.value.running)
+    }
+
+    /**
+     * `SPEC.md` §5.0. Closes and writes each acquisition-rate bucket on a timer, so that a bucket in
+     * which NOTHING was heard is still written. A sightings-driven flush would omit the dead minutes,
+     * and the dead minutes are the measurement.
+     */
+    private suspend fun densityBucketLoop() {
+        while (kotlin.coroutines.coroutineContext.isActive) {
+            val now = System.currentTimeMillis()
+            val nextBoundary = (Math.floorDiv(now, SpikeTiming.DENSITY_BUCKET_MS) + 1) *
+                SpikeTiming.DENSITY_BUCKET_MS
+            delay((nextBoundary - now).coerceAtLeast(1L) + BUCKET_SETTLE_MS)
+            val w = writer ?: return
+            val completed = synchronized(lock) {
+                densityAccumulator.advanceTo(
+                    System.currentTimeMillis(),
+                    radio.diagnosticsDropped,
+                    w.writeFailures,
+                    duty.scanOnMs(),
+                )
+            }
+            completed.forEach(::writeDensityBucket)
+            synchronized(lock) {
+                concurrentPeersNow = densityAccumulator.concurrentPeers(System.currentTimeMillis())
+            }
+            publish(running = _stats.value.running)
+        }
+    }
+
+    /**
+     * go/no-go **P2**, emitter side. Turns the transmitter on and off on the UTC-aligned cycle.
+     *
+     * Every transition is written to `latency.csv` with the lag from the nominal cycle boundary,
+     * measured on THIS device's clock only. That single-clock number is the transmit-side component
+     * of discovery latency, and being able to subtract it is what separates "our software took 900 ms
+     * to get on air" from "the air took 900 ms", which are different findings with different fixes.
+     */
+    private suspend fun latencyEmitterLoop() {
+        // AT MOST ONE START PER CYCLE. Without this, a loop iteration that wakes shortly before the
+        // ON→OFF transition (delay overshoot, a Doze wake, a slow `startAdvertising`) starts the
+        // transmitter a second time inside the same ON window and writes an EMIT_STARTED row with a
+        // ~19 900 ms lag. That row is indistinguishable from a genuinely catastrophic transmit
+        // delay, and it would be entirely manufactured by the instrument.
+        var lastStartedCycle = Long.MIN_VALUE
+        var lastStoppedCycle = Long.MIN_VALUE
+        while (kotlin.coroutines.coroutineContext.isActive) {
+            val now = System.currentTimeMillis()
+            if (LatencyCycle.inOnWindow(now)) {
+                val cycleStart = LatencyCycle.cycleStartMs(now)
+                val cycle = LatencyCycle.cycleIndex(now)
+                val request = advertiseRequest.takeIf { cycle != lastStartedCycle }
+                if (request != null) {
+                    lastStartedCycle = cycle
+                    val outcome = radio.startAdvertising(request)
+                    val at = System.currentTimeMillis()
+                    val lag = at - cycleStart
+                    synchronized(lock) { emitStartLagMs = lag }
+                    writeLatencyRow(
+                        event = "EMIT_STARTED",
+                        cycleStartMs = cycleStart,
+                        atMs = at,
+                        peerKey = "SELF",
+                        resolvedSlot = _config.value.deviceSlot.toString(),
+                        latencyMs = lag,
+                    )
+                    record(
+                        EventKind.CONTROL,
+                        "latency cycle ON: startAdvertising -> $outcome lag=${lag}ms",
+                        toLogcat = false,
+                    )
+                }
+                delay(LatencyCycle.millisUntilNextTransition(System.currentTimeMillis())
+                    .coerceAtLeast(1L))
+            } else {
+                // Same one-per-cycle guard as the ON branch. `stopAdvertising` is idempotent at the
+                // radio, but the ROW is not — a repeat would put two EMIT_STOPPED entries in one
+                // cycle and make the OFF window look like it was entered twice.
+                val cycle = LatencyCycle.cycleIndex(now)
+                if (cycle != lastStoppedCycle) {
+                    lastStoppedCycle = cycle
+                    val cycleStart = LatencyCycle.cycleStartMs(now)
+                    radio.stopAdvertising()
+                    writeLatencyRow(
+                        event = "EMIT_STOPPED",
+                        cycleStartMs = cycleStart,
+                        atMs = System.currentTimeMillis(),
+                        peerKey = "SELF",
+                        resolvedSlot = _config.value.deviceSlot.toString(),
+                        latencyMs = System.currentTimeMillis() - cycleStart,
+                    )
+                }
+                delay(LatencyCycle.millisUntilNextTransition(System.currentTimeMillis())
+                    .coerceAtLeast(1L))
+            }
+        }
     }
 
     fun stop() {
@@ -234,28 +488,100 @@ internal class SpikeController @Inject constructor(
         radio.setDiagnosticsEnabled(false, "spike stopped")
         radio.setScanModeOverride(null, "spike stopped")
 
+        // CLOSE THE LEDGER HERE, SYNCHRONOUSLY, rather than waiting for the SCAN_STOPPED event to
+        // arrive through the flow. The event collector is about to be cancelled and the emission is
+        // asynchronous, so relying on it is a race whose losing side silently leaves the final scan
+        // interval open — inflating scan_on_ms by however long the process happens to survive.
+        synchronized(lock) {
+            duty.onScanClosed()
+            duty.onAdvertiseStopped()
+        }
+
         jobs.forEach { it.cancel() }
         jobs = mutableListOf()
 
         if (w != null) {
+            // One last battery point at the moment of stopping, so the run's endpoints are the run's
+            // endpoints and not "whenever the 60-second timer last happened to fire".
+            runCatching { sampleBattery() }
+
+            // Flush whatever bucket the run died in. A partial bucket is labelled by its own
+            // start/end timestamps and the analysis can see it is short; DISCARDING it would delete
+            // the minutes immediately before a stop, which for an OEM-kill run is the interesting part.
+            val trailing = synchronized(lock) {
+                densityAccumulator.advanceTo(
+                    System.currentTimeMillis() + SpikeTiming.DENSITY_BUCKET_MS,
+                    radio.diagnosticsDropped,
+                    w.writeFailures,
+                    duty.scanOnMs(),
+                )
+            }
+            trailing.forEach(::writeDensityBucket)
+
+            val cfg = _config.value
+            val endClock = SpikeClockReference.capture()
+            val summary = LinkedHashMap<String, String>()
+            summary["ended_utc"] = SpikeWriter.isoUtc(System.currentTimeMillis())
+            summary["duration_ms"] = (System.currentTimeMillis() - startedAtMillis).toString()
+            summary["sightings"] = sightingCount.toString()
+            summary["unique_advertiser_addresses"] = addrToEids.size.toString()
+            summary["unique_ephemeral_ids"] = eidToAddrs.size.toString()
+            summary["bridged_addresses"] = bridgedAddresses().toString()
+            summary["bridged_eids"] = bridgedEids().toString()
+            summary["diagnostics_dropped"] = radio.diagnosticsDropped.toString()
+            summary["write_failures"] = w.writeFailures.toString()
+            summary["integrity"] = _stats.value.integrityNote
+
+            // ---- P1 battery ----
+            summary["battery_samples"] = batterySamples.toString()
+            summary["battery_level_delta_pct"] = drain.levelDeltaPct.toString()
+            summary["battery_charge_delta_uah"] = drain.chargeDeltaUah.toString()
+            summary["battery_ever_plugged"] = drain.everPlugged.toString()
+            summary["battery_screen_on_samples"] = drain.screenOnSamples.toString()
+            summary["battery_invalid_reason"] = drain.invalidReason(cfg.maxCapture, cfg.mode)
+            summary["scan_on_ms_total"] = duty.scanOnMs().toString()
+            summary["advertise_on_ms_total"] = duty.advertiseOnMs().toString()
+            summary["scan_on_pct_of_run"] = duty.scanOnPct().toString()
+            summary["scan_open_transitions"] = duty.scanOpenTransitions.toString()
+            summary["battery_attribution_note"] =
+                "scan_on_ms is HOST-REQUESTED radio time, not receiver-on time. Whole-device " +
+                    "drain, not app drain: subtract a paired BATTERY_BASELINE run on this handset."
+
+            // ---- P2 latency ----
+            summary["latency_rows"] = latencyRowsWritten.toString()
+            summary["latency_samples"] = latency.totalSamples.toString()
+            summary["latency_min_ms"] =
+                if (latency.totalSamples == 0L) "" else latency.minLatencyMs.toString()
+            summary["latency_max_ms"] =
+                if (latency.totalSamples == 0L) "" else latency.maxLatencyMs.toString()
+            summary["latency_after_on_window"] = latency.afterOnWindow.toString()
+            summary["latency_missed_peer_cycles"] = latency.missedCycles.toString()
+            summary["latency_correction_required"] =
+                "YES — every latency_ms is uncorrected for the clock offset between handsets. " +
+                    "Use the paired-sum estimator over BOTH devices' latency.csv, or subtract the " +
+                    "two clock_*_network_offset_ms values. SpikeLatency.kt."
+            endClock.describe("clock_end").forEach { (k, v) -> summary[k] = v }
+            startClock?.let { start ->
+                summary["clock_drift_over_run_ms"] =
+                    if (start.networkTimeAvailable && endClock.networkTimeAvailable) {
+                        (endClock.networkOffsetMs - start.networkOffsetMs).toString()
+                    } else {
+                        "UNKNOWN — network time unavailable at one or both ends of the run"
+                    }
+            }
+
+            // ---- SPEC §5.0 density ----
+            summary["density_buckets"] = densityBucketsWritten.toString()
+            summary["distinct_peers_total"] = densityAccumulator.distinctPeersEver.toString()
+            summary["peak_concurrent_peers"] = densityAccumulator.peakConcurrentPeers.toString()
+            summary["peak_concurrent_window_ms"] = SpikeTiming.PEER_LIVENESS_MS.toString()
+
             record(EventKind.CONTROL, "run stopped")
-            w.closeMeta(
-                mapOf(
-                    "ended_utc" to SpikeWriter.isoUtc(System.currentTimeMillis()),
-                    "duration_ms" to (System.currentTimeMillis() - startedAtMillis).toString(),
-                    "sightings" to sightingCount.toString(),
-                    "unique_advertiser_addresses" to addrToEids.size.toString(),
-                    "unique_ephemeral_ids" to eidToAddrs.size.toString(),
-                    "bridged_addresses" to bridgedAddresses().toString(),
-                    "bridged_eids" to bridgedEids().toString(),
-                    "diagnostics_dropped" to radio.diagnosticsDropped.toString(),
-                    "write_failures" to w.writeFailures.toString(),
-                    "integrity" to _stats.value.integrityNote,
-                ),
-            )
+            w.closeMeta(summary)
             w.close()
         }
         writer = null
+        advertiseRequest = null
         publish(running = false)
     }
 
@@ -423,6 +749,50 @@ internal class SpikeController @Inject constructor(
             bump(addressTypeCounts, addressTypeName(d.addressTypeBits))
         }
 
+        // ---- SPEC §5.0 acquisition rate / peer density -------------------------------------------
+        // Fed from the SAME record that produced the sighting row, in the same pass, so the density
+        // file and the sightings file cannot disagree about what arrived.
+        val slot = resolvedSlot.toIntOrNull()
+        val peerKey = peerKeyFor(slot, eidHex, d.advertiserAddress)
+        val completedBuckets = synchronized(lock) {
+            val buckets = densityAccumulator.onSighting(
+                nowMs = d.observedAtEpochMs,
+                peerKey = peerKey,
+                advertiserAddress = d.advertiserAddress,
+                eidHex = eidHex,
+                resolvedSlot = slot,
+                decodeFailed = decodeError.isNotEmpty(),
+                isCarrierBCandidate = serviceData == null,
+                droppedTotal = radio.diagnosticsDropped,
+                writeFailuresTotal = w.writeFailures,
+                scanOnMsTotal = duty.scanOnMs(),
+            )
+            concurrentPeersNow = densityAccumulator.concurrentPeers(d.observedAtEpochMs)
+            buckets
+        }
+        completedBuckets.forEach(::writeDensityBucket)
+
+        // ---- go/no-go P2 discovery latency ------------------------------------------------------
+        // Only in LATENCY_PROBE mode: outside it the peer's transmitter is not on a known schedule,
+        // so "time since the cycle boundary" measures nothing. Self-sightings are excluded — a
+        // device hearing its own reflection would record a latency of approximately zero and drag
+        // the percentile down, which is the most flattering possible way to be wrong.
+        if (_config.value.mode == SpikeMode.LATENCY_PROBE && selfEid != "true" &&
+            decodeError.isEmpty() && eidHex.isNotEmpty()
+        ) {
+            val sample = synchronized(lock) { latency.onSighting(peerKey, d.observedAtEpochMs) }
+            if (sample != null) {
+                writeLatencyRow(
+                    event = "SCAN_FIRST_SEEN",
+                    cycleStartMs = sample.cycleStartUtcMs,
+                    atMs = sample.firstSeenUtcMs,
+                    peerKey = sample.peerKey,
+                    resolvedSlot = resolvedSlot,
+                    latencyMs = sample.latencyMs,
+                )
+            }
+        }
+
         val n = nextSeq()
         val elapsed = d.observedAtEpochMs - startedAtMillis
 
@@ -507,11 +877,28 @@ internal class SpikeController @Inject constructor(
     private fun onRadioEvent(e: AndroidRadioEvent) {
         synchronized(lock) {
             when (e.kind) {
-                AndroidRadioEvent.Kind.SCAN_FAILED -> scanFailures++
+                // THE RADIO-ON-TIME LEDGER. This is what makes the battery figure attributable:
+                // without it, a run the OEM killed after twelve minutes reports an excellent %/hr
+                // for a phone that spent the other seventy-eight doing nothing. SpikeDutyLedger.kt.
+                AndroidRadioEvent.Kind.SCAN_STARTED -> { scanStarts++; duty.onScanOpened() }
+                AndroidRadioEvent.Kind.SCAN_STOPPED -> duty.onScanClosed()
+                // A failed scan is a CLOSED scan. Counting it as open would credit the radio with
+                // time it did not spend receiving, in the exact direction that flatters us.
+                AndroidRadioEvent.Kind.SCAN_FAILED -> { scanFailures++; duty.onScanClosed() }
                 AndroidRadioEvent.Kind.SCAN_THROTTLED -> scanThrottles++
-                AndroidRadioEvent.Kind.SCAN_STARTED -> scanStarts++
+                AndroidRadioEvent.Kind.ADVERTISE_STARTED -> duty.onAdvertiseLive()
+                AndroidRadioEvent.Kind.ADVERTISE_STOPPED,
+                AndroidRadioEvent.Kind.ADVERTISE_FAILED -> duty.onAdvertiseStopped()
                 AndroidRadioEvent.Kind.EPOCH_ROTATED -> epochRotations++
-                AndroidRadioEvent.Kind.ADAPTER_STATE -> adapterEvents++
+                AndroidRadioEvent.Kind.ADAPTER_STATE -> {
+                    adapterEvents++
+                    // The adapter going away takes both the scan and the advertisement with it,
+                    // and the radio does not always emit a STOPPED for each on the way out.
+                    if (e.detail == "OFF" || e.detail == "TURNING_OFF") {
+                        duty.onScanClosed()
+                        duty.onAdvertiseStopped()
+                    }
+                }
                 else -> Unit
             }
             lastEventLine = "${e.kind} ${e.detail}"
@@ -608,6 +995,114 @@ internal class SpikeController @Inject constructor(
         if (toLogcat && kind == EventKind.CONTROL) Log.i(TAG, detail)
     }
 
+    private fun writeLatencyRow(
+        event: String,
+        cycleStartMs: Long,
+        atMs: Long,
+        peerKey: String,
+        resolvedSlot: String,
+        latencyMs: Long,
+    ) {
+        val w = writer ?: return
+        val cfg = _config.value
+        val seconds = atMs / 1000L
+        synchronized(lock) { latencyRowsWritten++ }
+        w.appendLatencyCsv(
+            listOf(
+                event,
+                LatencyCycle.cycleIndex(cycleStartMs).toString(),
+                LatencyCycle.epochCycleIndex(cycleStartMs).toString(),
+                cycleStartMs.toString(),
+                peerKey,
+                resolvedSlot,
+                atMs.toString(),
+                latencyMs.toString(),
+                (latencyMs > SpikeTiming.LATENCY_ON_MS).toString(),
+                // A packet cannot arrive before it was sent. A negative value is therefore
+                // model-free proof that this device's clock is behind the emitter's by at least
+                // this much — SpikeLatency.kt METHOD 4, the error bar that costs nothing.
+                (latencyMs < 0L).toString(),
+                cfg.duty.name,
+                SpikeTiming.scanModeName(SpikeTiming.effectiveScanMode(cfg)),
+                KeySchedule.dayIndex(seconds).toString(),
+                KeySchedule.epochIndex(seconds).toString(),
+            ).joinToString(",") { csvCell(it) },
+        )
+    }
+
+    private fun writeDensityBucket(bucket: DensityBucket) {
+        val w = writer ?: return
+        val cfg = _config.value
+        val scanMode = SpikeTiming.effectiveScanMode(cfg)
+        val advInterval = SpikeTiming.nominalAdvertiseIntervalMs(cfg.duty)
+        // NOMINAL, and named NOMINAL in the column header. It is the packet count a peer WOULD emit
+        // in this bucket at the documented advertising interval, before any consideration of how
+        // much of the bucket our receiver was actually listening for. Dividing observed by this
+        // gives a yield that is only as good as the constant, and the constant is an AOSP document,
+        // not a measurement of the handset in the room.
+        val expectedPerPeer = if (advInterval > 0) SpikeTiming.DENSITY_BUCKET_MS / advInterval else 0
+        synchronized(lock) { densityBucketsWritten++ }
+
+        w.appendDensityCsv(
+            listOf(
+                bucket.index.toString(),
+                bucket.startUtcMs.toString(),
+                SpikeWriter.isoUtc(bucket.startUtcMs),
+                bucket.endUtcMs.toString(),
+                SpikeTiming.DENSITY_BUCKET_MS.toString(),
+                bucket.packets.toString(),
+                bucket.decodeFailures.toString(),
+                bucket.carrierBCandidates.toString(),
+                bucket.distinctPeers.toString(),
+                bucket.distinctAddresses.toString(),
+                bucket.distinctEids.toString(),
+                bucket.distinctSlots.toString(),
+                bucket.concurrentPeersAtEnd.toString(),
+                SpikeTiming.PEER_LIVENESS_MS.toString(),
+                bucket.scanOnMsInBucket.toString(),
+                SpikeTiming.nominalScanDutyPct(scanMode).toString(),
+                advInterval.toString(),
+                expectedPerPeer.toString(),
+                bucket.diagnosticsDroppedInBucket.toString(),
+                bucket.writeFailuresInBucket.toString(),
+                cfg.mode.name,
+                cfg.duty.name,
+                SpikeTiming.scanModeName(scanMode),
+                cfg.maxCapture.toString(),
+            ).joinToString(",") { csvCell(it) },
+        )
+
+        bucket.peers.forEach { peer ->
+            w.appendDensityPeerCsv(
+                listOf(
+                    bucket.index.toString(),
+                    bucket.startUtcMs.toString(),
+                    peer.peerKey,
+                    peer.resolvedSlot?.toString() ?: "",
+                    peer.packets.toString(),
+                    peer.firstSeenMs.toString(),
+                    peer.lastSeenMs.toString(),
+                    (peer.lastSeenMs - peer.firstSeenMs).toString(),
+                    peer.maxGapMs.toString(),
+                ).joinToString(",") { csvCell(it) },
+            )
+        }
+    }
+
+    /**
+     * How a peer is identified for counting purposes, most stable key first.
+     *
+     * Slot survives both epoch rotation and RPA rotation because it comes from the key schedule.
+     * An eid survives one epoch. An address survives until the controller rotates it. All three are
+     * ALSO counted separately per bucket, so the difference between the counts is visible rather
+     * than resolved silently in favour of whichever one this function happened to pick.
+     */
+    private fun peerKeyFor(slot: Int?, eidHex: String, address: String): String = when {
+        slot != null -> "slot:$slot"
+        eidHex.isNotEmpty() -> "eid:$eidHex"
+        else -> "addr:$address"
+    }
+
     private fun nextSeq(): Long = synchronized(lock) { ++seq }
 
     private fun publish(running: Boolean) {
@@ -647,6 +1142,56 @@ internal class SpikeController @Inject constructor(
                 diagnosticsDropped = radio.diagnosticsDropped,
                 writeFailures = w?.writeFailures ?: 0L,
                 lastEventLine = lastEventLine,
+
+                mode = _config.value.mode,
+                modeHeadline = SpikeProcedure.headline(
+                    _config.value.mode,
+                    _config.value.maxCapture,
+                ),
+
+                batterySamples = batterySamples,
+                batteryLevelPct = drain.latestSample?.levelPct ?: -1,
+                batteryLevelDeltaPct = drain.levelDeltaPct,
+                batteryChargeDeltaUah = drain.chargeDeltaUah,
+                batteryTemperatureDeciC = drain.latestSample?.temperatureDeciC ?: -1,
+                batteryPlugged = drain.latestSample?.plugged == true,
+                batteryEverPlugged = drain.everPlugged,
+                batteryScreenInteractive = drain.latestSample?.screenInteractive == true,
+                batteryDeviceIdle = drain.latestSample?.deviceIdleMode == true,
+                batteryPowerSave = drain.latestSample?.powerSaveMode == true,
+                percentPerHourFromLevel = drain.percentPerHourFromLevel(),
+                percentPerHourFromCharge = drain.percentPerHourFromCharge(),
+                batteryInvalidReason = drain.invalidReason(
+                    _config.value.maxCapture,
+                    _config.value.mode,
+                ),
+
+                scanOnMs = duty.scanOnMs(),
+                advertiseOnMs = duty.advertiseOnMs(),
+                scanOnPct = duty.scanOnPct(),
+                scanOpenTransitions = duty.scanOpenTransitions,
+                nominalScanDutyPct = SpikeTiming.nominalScanDutyPct(
+                    SpikeTiming.effectiveScanMode(_config.value),
+                ),
+                scanModeName = SpikeTiming.scanModeName(
+                    SpikeTiming.effectiveScanMode(_config.value),
+                ),
+
+                latencySamples = latency.totalSamples,
+                latencyP50Ms = latency.percentileMs(50),
+                latencyP95Ms = latency.percentileMs(95),
+                latencyMinMs = if (latency.totalSamples == 0L) null else latency.minLatencyMs,
+                latencyMaxMs = if (latency.totalSamples == 0L) null else latency.maxLatencyMs,
+                latencyAfterOnWindow = latency.afterOnWindow,
+                latencyMissedPeerCycles = latency.missedCycles,
+                emitStartLagMs = emitStartLagMs,
+                networkTimeAvailable = startClock?.networkTimeAvailable == true,
+                networkTimeSource = startClock?.source ?: "",
+
+                densityBuckets = densityBucketsWritten,
+                distinctPeersTotal = densityAccumulator.distinctPeersEver,
+                concurrentPeers = concurrentPeersNow,
+                peakConcurrentPeers = densityAccumulator.peakConcurrentPeers,
             )
         }
     }
@@ -664,6 +1209,10 @@ internal class SpikeController @Inject constructor(
         epochRotations = 0L; adapterEvents = 0L; seq = 0L
         resolutionTable = emptyMap(); resolutionTableEpoch = Long.MIN_VALUE
         lastEventLine = ""
+        drain.reset(); latency.reset(); densityAccumulator.reset()
+        batterySamples = 0L; latencyRowsWritten = 0L; densityBucketsWritten = 0L
+        concurrentPeersNow = 0; emitStartLagMs = -1L
+        startClock = null; advertiseRequest = null
     }
 
     private fun <K> bump(map: MutableMap<K, Long>, key: K) {
@@ -677,6 +1226,16 @@ internal class SpikeController @Inject constructor(
 
         /** Screen refresh cap. The file is never throttled; only the UI snapshot is. */
         private const val PUBLISH_INTERVAL_MS = 250L
+
+        /**
+         * UNMEASURED GUESS — see `SpikeTiming.kt` for the block this belongs to.
+         *
+         * Delay past a density-bucket boundary before closing the bucket, so a sighting whose
+         * `observedAtEpochMs` was back-dated by the `timestampNanos` conversion still lands in the
+         * bucket it belongs to rather than in the one after. Deliberately larger than any plausible
+         * scan-callback delivery delay and far smaller than a bucket.
+         */
+        private const val BUCKET_SETTLE_MS = 250L
 
         /**
          * `SPEC.md` §4.1. 0xFDA9 is PROVISIONAL and MUST NOT SHIP — SIG Adopter registration and a

@@ -80,6 +80,28 @@ internal fun SpikeScreen(
             HorizontalDivider(color = colors.outline)
         }
 
+        // ------------------------------------------------------------------ mode + procedure
+        // FIRST, ABOVE EVERYTHING ELSE. The three Phase 0 measurements are mutually hostile and each
+        // produces a plausible-looking file under the wrong mode, so choosing the mode is the first
+        // decision of a run and therefore the first control on the screen. The instrument then
+        // states, in words, what the current combination can and cannot claim.
+        Text("MODE — what this run is FOR", color = colors.ink)
+        StepperRow(
+            label = "Mode",
+            value = config.mode.label,
+            enabled = !stats.running,
+            onDown = { onConfigChange(config.copy(mode = config.mode.previous())) },
+            onUp = { onConfigChange(config.copy(mode = config.mode.next())) },
+        )
+        Text(SpikeProcedure.headline(config.mode, config.maxCapture), color = colors.accentRadar)
+
+        // The procedure lives on the phone because the person running this is in a car park with no
+        // laptop. A runbook in a repository is a runbook they do not have.
+        Text("WHAT TO DO", color = colors.ink)
+        SpikeProcedure.steps(config.mode).forEach { step -> Text(step, color = colors.inkMuted) }
+
+        HorizontalDivider(color = colors.outline)
+
         // ------------------------------------------------------------------ configuration
         Text("CONFIG (changing any of these restarts into a new file)", color = colors.ink)
 
@@ -191,12 +213,108 @@ internal fun SpikeScreen(
 
         HorizontalDivider(color = colors.outline)
 
+        // ------------------------------------------------------------------ P2 discovery latency
+        Text("P2 — DISCOVERY LATENCY (target p50 <= 5s)", color = colors.ink)
+        Stat("Samples", stats.latencySamples.toString())
+        Stat("p50", stats.latencyP50Ms.msOrDash())
+        Stat("p95", stats.latencyP95Ms.msOrDash())
+        Stat("Min (negative = proven skew)", stats.latencyMinMs.msOrDash())
+        Stat("Max", stats.latencyMaxMs.msOrDash())
+        Stat("First seen AFTER the ON window", stats.latencyAfterOnWindow.toString())
+        Stat("Peer-cycles with no sighting at all", stats.latencyMissedPeerCycles.toString())
+        Stat("Our own transmit lag from cycle start", stats.emitStartLagMs.msOrDash())
+        Stat(
+            "Network time (for the error bar)",
+            if (stats.networkTimeAvailable) "AVAILABLE" else "NONE",
+        )
+        if (stats.networkTimeSource.isNotEmpty()) {
+            Text(stats.networkTimeSource, color = colors.inkMuted)
+        }
+        Text(
+            text = stats.latencyNote,
+            // Danger, not muted, when the device has itself observed proof that the clocks disagree
+            // or has no way to bound the disagreement. A caveat rendered in the same grey as
+            // everything else is a caveat nobody reads.
+            color = if ((stats.latencyMinMs ?: 0L) < 0L ||
+                (stats.mode == SpikeMode.LATENCY_PROBE && !stats.networkTimeAvailable)
+            ) {
+                colors.danger
+            } else {
+                colors.inkMuted
+            },
+            modifier = Modifier.semantics { contentDescription = stats.latencyNote },
+        )
+
+        HorizontalDivider(color = colors.outline)
+
+        // ------------------------------------------------------------------ P1 battery
+        Text("P1 — BATTERY (target <4%/hr scanning, <1%/day idle)", color = colors.ink)
+        Stat("Samples", stats.batterySamples.toString())
+        Stat("Level now", if (stats.batteryLevelPct < 0) "-" else "${stats.batteryLevelPct}%")
+        Stat("Level change this run", "${stats.batteryLevelDeltaPct}%")
+        Stat("Charge counter change", "${stats.batteryChargeDeltaUah} uAh")
+        Stat("%/hr from level (coarse)", stats.percentPerHourFromLevel.rateOrDash())
+        Stat("%/hr from charge counter", stats.percentPerHourFromCharge.rateOrDash())
+        Stat("Temperature", if (stats.batteryTemperatureDeciC < 0) "-" else
+            "${stats.batteryTemperatureDeciC / 10.0} C")
+        Stat("Plugged now / ever this run", "${stats.batteryPlugged} / ${stats.batteryEverPlugged}")
+        Stat("Screen interactive", stats.batteryScreenInteractive.toString())
+        Stat("Doze / power save", "${stats.batteryDeviceIdle} / ${stats.batteryPowerSave}")
+        Text(
+            text = stats.batteryNote,
+            color = if (stats.batteryInvalidReason.isNotEmpty()) colors.danger else colors.inkMuted,
+            modifier = Modifier.semantics { contentDescription = stats.batteryNote },
+        )
+
+        Text("RADIO TIME — what makes the number above attributable", color = colors.ink)
+        Stat("Scan open", "${stats.scanOnMs / 1000}s (${stats.scanOnPct}% of run)")
+        Stat("Advertising live", "${stats.advertiseOnMs / 1000}s")
+        Stat("Scan open transitions", stats.scanOpenTransitions.toString())
+        Stat("Scan mode in effect", stats.scanModeName)
+        Stat("Nominal controller duty", "${stats.nominalScanDutyPct}%")
+        Text(
+            "Scan open is HOST-REQUESTED radio time. The controller duty-cycles the receiver " +
+                "inside itself and gives an app no way to see it, so real receiver time is roughly " +
+                "this x the nominal duty — and several OEMs override that nominal. A battery " +
+                "figure with a low scan-open percentage is a figure for a phone that was not " +
+                "scanning.",
+            color = colors.inkMuted,
+        )
+
+        HorizontalDivider(color = colors.outline)
+
+        // ------------------------------------------------------------------ SPEC 5.0 density
+        Text("SPEC 5.0 — ACQUISITION RATE AND PEER DENSITY", color = colors.ink)
+        Stat("Buckets written", stats.densityBuckets.toString())
+        Stat("Distinct peers this run", stats.distinctPeersTotal.toString())
+        Stat("Concurrent peers now", stats.concurrentPeers.toString())
+        Stat("Peak concurrent", stats.peakConcurrentPeers.toString())
+        Text(
+            "\"Concurrent\" means heard from in the last " +
+                "${SpikeTiming.PEER_LIVENESS_MS / 1000}s — concurrency is not observable, only " +
+                "recency is. density_peers.csv carries per-peer first/last timestamps so any other " +
+                "window can be re-derived. Buckets with zero packets ARE written; a success rate " +
+                "computed only over buckets where something succeeded is 100% by construction.",
+            color = colors.inkMuted,
+        )
+
+        HorizontalDivider(color = colors.outline)
+
         // ------------------------------------------------------------------ B8 counters
         Text("B8 — RPA CO-ROTATION SCREEN", color = colors.ink)
         Stat("Unique advertiser addresses", stats.uniqueAdvertiserAddresses.toString())
         Stat("Unique ephemeral ids", stats.uniqueEphemeralIds.toString())
         Stat("Addresses seen with >1 eid", stats.bridgedAddresses.toString())
         Stat("Eids seen with >1 address", stats.bridgedEids.toString())
+        if (!config.mode.bijectionValid) {
+            Text(
+                "VOID IN THIS MODE. The latency probe stops and restarts our own transmitter once " +
+                    "per cycle, which rotates this device's advertising address INSIDE a protocol " +
+                    "epoch. Any bridging seen here is self-inflicted by the instrument. Test §4.3.1 " +
+                    "in CAPTURE mode.",
+                color = colors.danger,
+            )
+        }
         Text(
             "Both bridge counters MUST be 0. A non-zero value is real evidence of failure. " +
                 "A zero value is NOT evidence of success — a phone's scanner hops channels and " +
@@ -280,13 +398,47 @@ internal fun SpikeScreen(
         Text(
             "events.jsonl is the record (every sighting AND every radio lifecycle event, in " +
                 "arrival order, contiguous sequence numbers). sightings.csv is the same rows " +
-                "flattened. meta.json is device, OS build fingerprint, config and the honesty " +
+                "flattened. battery.csv is P1 with the radio state on every row. latency.csv is " +
+                "P2, uncorrected. density.csv and density_peers.csv are SPEC 5.0. meta.json is " +
+                "device, OS build fingerprint, config, both clock references and the honesty " +
                 "flags. Nothing is deduplicated, smoothed or sampled.",
             color = colors.inkMuted,
             textAlign = TextAlign.Start,
         )
+
+        HorizontalDivider(color = colors.outline)
+
+        // ------------------------------------------------------------------ the trust table
+        // LAST, so it is what a person sees after scrolling past a screenful of numbers, which is
+        // the moment they are most likely to quote one. Every measurement, and whether it can be
+        // read on its own.
+        Text("BEFORE YOU QUOTE ANY NUMBER ABOVE", color = colors.ink)
+        SpikeProcedure.MEASUREMENTS.forEach { m ->
+            val line = "${m.name} — ${m.trust.label}. Answers: ${m.answers}. ${m.caveat}"
+            Text(
+                text = line,
+                color = when (m.trust) {
+                    SpikeProcedure.Trust.STANDS_ALONE -> colors.inkMuted
+                    else -> colors.danger
+                },
+                modifier = Modifier.semantics { contentDescription = line },
+            )
+        }
     }
 }
+
+/** Milliseconds, or a dash. Never a zero standing in for "not measured". */
+private fun Long?.msOrDash(): String = if (this == null || this == -1L) "-" else "${this}ms"
+
+/** A rate to one decimal, or a dash. A suppressed projection must not render as 0.0. */
+private fun Double?.rateOrDash(): String =
+    if (this == null) "-- (too early / unavailable)" else String.format("%.2f %%/hr", this)
+
+private fun SpikeMode.next(): SpikeMode =
+    SpikeMode.entries[(ordinal + 1) % SpikeMode.entries.size]
+
+private fun SpikeMode.previous(): SpikeMode =
+    SpikeMode.entries[(ordinal - 1 + SpikeMode.entries.size) % SpikeMode.entries.size]
 
 @Composable
 private fun Stat(label: String, value: String) {
