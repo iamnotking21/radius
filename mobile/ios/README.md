@@ -126,25 +126,43 @@ before any more Swift is written.** The shared public API is a contract
 The authoritative list, with signatures, is in the `ASSUMED SHARED API` block at the top of
 `Sources/Core/SharedBridge.swift`. Summary:
 
-| # | Assumption | Risk if wrong |
-|---|---|---|
-| 1 | Framework `baseName` is `RadiusShared` | Every path in `Project.swift` and the build script |
-| 2 | Gradle task `:shared:assemble<Name><Variant>XCFramework` | Pre-build phase fails |
-| 3 | Output at `shared/build/XCFrameworks/{debug,release}/` | Pre-build phase fails |
-| 4 | `RadiusCoreFactory().create(config:)` returns a `RadiusCore` | Bridge rewrite |
-| 5 | `RadiusCore.radar: RadarController` with `start/stop/setGhostMode` | Bridge rewrite |
-| 6 | Subscriptions cross as **callbacks**, not raw `Flow` (risk R12) | Bridge rewrite; Flow does not bridge to Swift |
-| 7 | Cancellation handle named `RadiusCancellable`, not `Cancellable` | Collides with `Combine.Cancellable` |
-| 8 | Peers expose an **opaque, session-scoped** handle — not the ephemeral ID | Safety invariants 4 and 5 |
-| 9 | `displayMeters` is band-midpoint **+ jitter, computed in shared** | Safety invariant 2; iOS must never compute distance |
-| 10 | Exactly four bands, as a Kotlin enum | Safety invariant 2 |
-| 11 | Unverified accounts are filtered out **in shared** | Safety invariant 6 |
-| 12 | iOS supplies the SQLCipher database key from the Keychain | Key management; keys must never leave the device or reach iCloud |
-| 13 | Certificate pinning lives in shared's HTTP client (Ktor Darwin), not Swift | An unpinned API client is a shipping blocker either way |
-| 14 | The `BleRadio` seam is a Swift-implemented port injected into Kotlin, not Kotlin calling CoreBluetooth directly | Determines who writes iOS state restoration; see `CoreBluetoothRadio.swift` |
+> **RECONCILED 2026-08-05 against the gated shared API v0.1.** These are no longer assumptions —
+> the API exists and is frozen in `.claude/memory/40-contracts.md`. **Two were overturned.** Do
+> not write Swift against the original column; the bridge in `SharedBridge.swift` still encodes
+> the pre-gate shape and must be rewritten before it compiles against anything real.
 
-Assumption 14 is an architectural decision, not a detail. Argument in
-`Sources/BLE/CoreBluetoothRadio.swift`.
+| # | Assumed | Outcome |
+|---|---|---|
+| 1 | Framework `baseName` is `RadiusShared` | ✅ holds |
+| 2 | Gradle task `:shared:assemble<Name><Variant>XCFramework` | ✅ holds |
+| 3 | Output at `shared/build/XCFrameworks/{debug,release}/` | ✅ holds |
+| 4 | `RadiusCoreFactory().create(config:)` | ❌ **OVERTURNED — ruling R-A.** It is `RadiusCore.Companion.create(config, radio, scope)`. The assumed form omits `radio`, which became mandatory the moment decision 21 made Swift inject the port. |
+| 5 | `setGhostMode(Bool)` | ❌ **OVERTURNED — ruling R-B.** It is `setVisibility(RadarVisibility)`. An enum extends without a signature break, and `GHOST` stays greppable so invariant 10 is auditable by search. `setGhostMode(true)` at a call site is unreadable exactly where safety matters. |
+| 6 | Callbacks, not raw `Flow` | ✅ **and now binding.** Every Swift-consumed stream needs a sibling `<name>Adapter(): FlowAdapter<T>`. Only `radarNodesAdapter()` exists — Discover and Threads cannot be bound until android-kotlin adds theirs. |
+| 7 | `RadiusCancellable`, not `Cancellable` | ✅ holds — the Combine collision was real |
+| 8 | Opaque session-scoped peer handle | ✅ holds |
+| 9 | `displayMeters` computed in shared | ✅ holds — and hardened: it is `f(session_salt, peer_id, band)` and takes no RSSI argument at all (decision 29) |
+| 10 | Four bands as a Kotlin enum | ⚠️ **six, not four.** `protocol.Band` adds `UNKNOWN` and `OUT_OF_RANGE`. `domain.radar.ProximityBand` was **deleted** (ruling D3). Do not collapse the two extra states onto `EDGE` to make a `switch` exhaustive — that shows a peer as present when we do not know that it is. |
+| 11 | Unverified accounts filtered in shared | ✅ holds |
+| 12 | iOS supplies the SQLCipher key from Keychain | ⏳ still open — no persistence exists yet |
+| 13 | Cert pinning in shared's Ktor Darwin client | ⏳ still open — no RPC client exists yet |
+| 14 | `BleRadio` seam is a Swift port injected into Kotlin | ✅ **RULED — decision 21.** The radio is the moat; write it where the tooling is. Swift gets Instruments Energy Log, a real debugger, and native state-restoration semantics. iOS state restoration is ios-swift's. |
+
+### What changed that iOS does not know about yet
+
+Landed after this bridge was written. All of it is contract, not preference:
+
+- **`AdvertiseRequest` carries an `AdvertisePayloadSource`, not a `ByteArray`** (decision 49). The radio holds no payload, so it cannot cache one across a rotation seam.
+- **`BleRadioPort` / `BleRadioListener`** — commands pull, events push, value types only, **no `suspend` in the implemented direction** (an exception crossing Kotlin/Native is a crash, not a catchable throw).
+- **`EpochBoundaryListener` + `setEpochBoundaryListener`.** This one is a security obligation, not an API detail: it drives `KeyRing.pruneSupersededAt`, and **the ADR-008 M4 key-destruction fix is inert on any platform that does not call it.** The predicate lives in `EpochTickerPolicy` in commonMain so the platforms cannot drift.
+- **`ByteArray` crosses as `KotlinByteArray`; a hex `String` was rejected** (ruling R-C). A String ephemeral ID is log-shaped — it survives interpolation into crash reports and analytics. The awkwardness is the feature.
+- **Retain cycle, contract-mandated (R-D):** `shutdown()` drops the listener **and** the Swift port holds it weak. Both, not either — the cycle straddles Kotlin/Native and Swift ARC.
+- **Domain facades reach Swift only through `RadiusCore` + `FlowAdapter`** (R-E), keeping the boundary one file wide.
+- `iosMain` gained `NSRecursiveLock` — recursive because the Android actual leans on reentrancy three frames deep.
+
+### Still genuinely open
+
+**Carrier B has no representation in the seam.** The port assumes broadcast-only, and iOS cannot emit service or manufacturer data in any state — so the iOS path is a GATT read (decision 23). This is the single largest piece of unpriced iOS work, and an Android-only spike exercises it **not at all**.
 
 ---
 
@@ -158,14 +176,17 @@ Assumption 14 is an architectural decision, not a detail. Argument in
    iOS, and that is a go/no-go input for blocker B1. Full detail in `CoreBluetoothRadio.swift`.
    Must be measured in the Phase 0 spike **before** the wire spec is locked.
 
-2. **→ `android-kotlin` / `orchestrator`, blocking, contract-touched.**
-   Publish `mobile/shared` public API v0, including the `expect BleRadio` shape (assumption
-   14) and the no-raw-`Flow` rule (assumption 6). Until then the bridge is speculative.
+2. ~~**→ `android-kotlin` / `orchestrator`** — publish shared API v0~~
+   **CLOSED 2026-08-05.** API v0.1 is gated in `.claude/memory/40-contracts.md`. Assumptions 4
+   and 5 were overturned; see the table above. The bridge is no longer speculative — it is
+   **known wrong** in two places, which is a better problem to have.
 
-3. **→ `design-system`, non-blocking.**
-   `mobile/design-tokens/` is empty. Discover (ember/400) and Radar (signal/400) accents,
-   radar ring radius ratios, spacing and type scale are all unset. Nothing has been
-   hardcoded in the meantime, deliberately.
+3. ~~**→ `design-system`** — design-tokens is empty~~
+   **CLOSED 2026-08-05.** Tokens are real: primitives transcribed from Figma's bound variables,
+   a semantic layer designed, generated at build time, and a WCAG contrast regression across 51
+   pairings fails the Android build. Fonts are still unchosen (§8 founder decision), so type is
+   metrics-only on both platforms. The generator emits Kotlin today; `build/tokens.resolved.json`
+   is the intended input for a Swift generator when iOS un-defers.
 
 4. **→ `qa-test`, non-blocking.**
    No test target is declared in `Project.swift`, because Tuist fails on a sources glob that
