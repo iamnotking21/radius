@@ -78,7 +78,11 @@ DEFERRED: all iOS · Mac · Carrier B validation · B7 · relay-only calling (G5
   NOTE: PHASE0_GO_NO_GO pre-committed the answer (exclusion list, told in the UI). Publishing
   the privacy §3a wording makes that a PUBLIC commitment — founder-level, decide knowingly.
 - entity/jurisdiction — blocks SIG UUID AND the privacy policy. Two paths, one dependency.
-- Figma pages 11:116-11:122 · SMS provider after email OTP · moderator staffing
+- [RESOLVED 2026-08-05] Figma fully enumerated — docs/SCREEN_INVENTORY.md. ~75 screens, 8
+  sections + foundations. Raises two follow-ups: design-tokens is EMPTY while the Foundations
+  page is not (placeholder hexes are hardening in the Android theme), and page F monetization
+  needs a real ADR-006 audit rather than the visual spot-check I did.
+- SMS provider after email OTP · moderator staffing
 
 ## LOG
 <!-- pruned 2026-08-05 by orchestrator. durable content lives in 30-decisions rows 15-76. -->
