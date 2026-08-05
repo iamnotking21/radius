@@ -1,6 +1,7 @@
 // :android — Radius Android app shell.
 //
-// !! UNVERIFIED !! No JDK on the authoring machine (blocker B5). Never evaluated by Gradle.
+// Evaluated and built by Gradle on JDK 21 (B5 unblocked). :android:assembleDebug,
+// :android:testDebugUnitTest and :android:lintDebug all pass from a cold build/ dir.
 //
 // Hilt lives HERE and only here. It is the ANDROID UI GRAPH. It must never appear in :shared —
 // ADR-007 is explicit: commonMain uses constructor injection and a plain factory, no DI framework,
@@ -106,36 +107,30 @@ kotlin {
 // =================================================================================================
 
 /**
- * Runs design-system's generator, then rewrites the emitted Kotlin into a package I own.
+ * Runs design-system's generator, then sets the emitted file's package to one I own.
  *
- * THE REWRITES ARE A SHIM AND THEY ARE TEMPORARY. `build/android/RadiusDesignTokens.kt` as emitted
- * today does not compile, for two reasons that are both one-line fixes in generate.mjs and are both
- * in the HANDOFF to design-system:
+ * HISTORY, KEPT SHORT BECAUSE IT ENDED WELL: this task once carried three extra rewrites patching
+ * generate.mjs's output so it would compile at all — an unresolvable `import Color`, a nested
+ * `object Color` that shadowed Compose's `Color` in all 30 type positions, and a block-comment
+ * opener sitting in KDoc prose, which opened a NESTED comment and swallowed the back half of the
+ * file. Each rewrite asserted its own match count, so the moment design-system fixed the generator
+ * (alias `ComposeColor`, plus a `docSafe()` sanitiser on every doc comment) this task went RED on
+ * good news and named the rewrite to delete. All three are now deleted. Do not re-add one: a shim
+ * that comes back is just a patch with extra steps. If the emitted Kotlin stops compiling, that is
+ * a generator bug and it goes back to design-system.
  *
- *   1. It emits `import Color` — an unresolvable root-package import. It wants
- *      `androidx.compose.ui.graphics.Color`.
- *   2. Even with that import fixed, the file declares `public object Color` nested inside
- *      `RadiusDesignTokens`. In every `val canvas: Color = Color(0xFF0B0B10)` the TYPE position
- *      `Color` resolves to that enclosing object's classifier, not to Compose's `Color`, so every
- *      one of the 30 colour declarations is a type mismatch.
+ * AND DO NOT WRITE A LITERAL BLOCK-COMMENT OPENER IN THIS KDOC. I did, in the sentence above,
+ * while describing that exact bug — design-system hit the identical trap writing its own note
+ * about it. Kotlin nests block comments, so it silently commented out the rest of THIS file:
+ * dependencies{} included. Gradle did not report a syntax error; it reported
+ * "Hilt plugin applied but no hilt-android dependency found", because from its point of view the
+ * dependencies block genuinely was not there. Spell it out in words instead.
  *
- * I am not allowed to write in mobile/design-tokens/ (root CLAUDE.md repo map) and I am not going
- * to hand-patch a file stamped DO NOT HAND-EDIT and then let the patch rot. So the fix is applied
- * mechanically, here, with every substitution ASSERTING that it matched — if design-system changes
- * the generator's shape (including fixing it properly), this task fails loudly and names the rule
- * that stopped matching, rather than silently emitting something subtly wrong.
- *
- * DELETE RULE: when generate.mjs emits compilable Kotlin, delete [rewrites] entirely and keep only
- * the package rewrite (which README HANDOFF step 1 explicitly delegates to me).
+ * What remains is not a workaround. mobile/design-tokens/README.md's HANDOFF step 1 explicitly
+ * delegates package placement to the consumer, and it still asserts, for the same reason as before:
+ * if the generator's package line changes shape, I want a sentence naming it, not 30 unresolved
+ * references pointing nowhere near the cause.
  */
-data class TokenRewrite(
-    val description: String,
-    val pattern: Regex,
-    val replacement: String,
-    /** Minimum matches required. Below this, the task fails rather than emitting silent nonsense. */
-    val expected: Int,
-)
-
 abstract class GenerateDesignTokens : DefaultTask() {
 
     /** Source of truth. Changing it must re-run this task. */
@@ -209,60 +204,26 @@ abstract class GenerateDesignTokens : DefaultTask() {
             throw GradleException("generate.mjs reported success but did not write $emitted")
         }
 
-        var source = emitted.readText()
+        val emittedSource = emitted.readText()
 
-        // The `expected` count assertion is the whole point: a silently-unapplied rewrite produces
-        // uncompilable or, worse, wrong-but-compiling output.
-        val rewrites = listOf(
-            TokenRewrite(
-                description = "package (HANDOFF step 1 — mine to set)",
-                pattern = Regex("^package com\\.radius\\.designtokens\\.generated$", RegexOption.MULTILINE),
-                replacement = "package ${targetPackage.get()}",
-                expected = 1,
-            ),
-            TokenRewrite(
-                description = "drop the unresolvable `import Color` (generator bug 1)",
-                pattern = Regex("^import Color\\r?\\n", RegexOption.MULTILINE),
-                replacement = "",
-                expected = 1,
-            ),
-            TokenRewrite(
-                description = "fully-qualify Color to escape the nested `object Color` shadow (generator bug 2)",
-                pattern = Regex(": Color = Color\\("),
-                replacement = ": androidx.compose.ui.graphics.Color = androidx.compose.ui.graphics.Color(",
-                expected = 30,
-            ),
-            TokenRewrite(
-                // Kotlin block comments NEST (unlike Java's). The KDoc on Accent.Radar contains the
-                // prose "do not reuse signal/* anywhere else", and that `/*` opens a nested comment
-                // which the KDoc's own `*/` then closes — leaving the rest of the file, all 100
-                // lines of it, inside a comment. It fails as "Missing '}'" plus "Unclosed comment"
-                // at EOF, which points nowhere near the actual cause.
-                description = "neutralise the nested-comment opener in Accent.Radar's KDoc (generator bug 3)",
-                pattern = Regex("signal/\\*"),
-                // U+2217 ASTERISK OPERATOR: reads identically, is not a comment opener.
-                replacement = "signal/∗",
-                expected = 1,
-            ),
-        )
-
-        for (rewrite in rewrites) {
-            val description = rewrite.description
-            val pattern = rewrite.pattern
-            val minimum = rewrite.expected
-            val matches = pattern.findAll(source).count()
-            if (matches < minimum) {
-                throw GradleException(
-                    "Design-token rewrite \"$description\" matched $matches times, expected at " +
-                        "least $minimum.\n" +
-                        "generate.mjs's output shape changed. If it now emits compilable Kotlin, " +
-                        "delete this rewrite from mobile/android/build.gradle.kts — that is the " +
-                        "intended end state. If it changed for another reason, this task is " +
-                        "stopping you from shipping tokens that silently do not mean what they say.",
-                )
-            }
-            source = pattern.replace(source, Regex.escapeReplacement(rewrite.replacement))
+        // HANDOFF step 1: the generator emits a placeholder package and the consumer places the
+        // file. Asserted, not assumed — an unapplied rewrite compiles to nothing useful.
+        val packageLine = Regex("^package com\\.radius\\.designtokens\\.generated$", RegexOption.MULTILINE)
+        val matches = packageLine.findAll(emittedSource).count()
+        if (matches != 1) {
+            throw GradleException(
+                "Expected exactly one `package com.radius.designtokens.generated` line in the " +
+                    "generated tokens, found $matches.\n" +
+                    "generate.mjs's output shape changed. mobile/design-tokens/README.md's HANDOFF " +
+                    "step 1 delegates package placement to the consumer, so :android rewrites that " +
+                    "line; it cannot if the line is not there. This is a design-system change — " +
+                    "raise it, do not patch around it here.",
+            )
         }
+        val source = packageLine.replace(
+            emittedSource,
+            Regex.escapeReplacement("package ${targetPackage.get()}"),
+        )
 
         val destination = outputDir.get().asFile
             .resolve(targetPackage.get().replace('.', '/'))

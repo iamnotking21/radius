@@ -117,7 +117,7 @@ pretends otherwise is the same category of dishonesty as a green battery gate.
 |---|---|---|
 | JDK | **21** (Temurin verified) | AGP 8.9 / Kotlin 2.1.20 / Gradle wrapper 8.13 |
 | Android SDK | **platform 35** + build-tools | `ANDROID_HOME` or `ANDROID_SDK_ROOT` **must** be set — `mobile/local.properties` is `.gitignored` (correctly; it holds machine-local absolute paths) and is therefore absent on every runner. `run-stage.sh` preflights this and fails in one second with the fix in the message, instead of failing six minutes into an AGP error. |
-| Node | 20+ | `conformance_gate.sh` phase 1, `battery_gate.sh` threshold check |
+| Node | 20+ | **A build dependency of `:android` itself, not just a gate helper.** `mobile/android/build.gradle.kts` hangs `generateDesignTokens` off `preBuild`, running `mobile/design-tokens/scripts/generate.mjs` — so `tokens.json` is the only place in the repo a colour value exists. Verified by task-graph inspection (`--dry-run`): the generator is in the graph for `testDebugUnitTest`, `lintDebug`, `assembleDebug`, `assembleRelease` **and** `processDebug/ReleaseManifestForPackage`. `:shared`-only work does not pull it. Also needed by `conformance_gate.sh` phase 1 and `battery_gate.sh`. Zero npm dependencies. `run-stage.sh` asserts it per-stage with the reason named. |
 | bash + coreutils + git | any | every gate; `git rev-parse` for repo-root resolution |
 | disk | ~15 GB | Gradle caches, SDK, two APK variants (debug ~51 MB, release ~23 MB) |
 
@@ -212,7 +212,18 @@ Kotlin instead of thirty seconds in the runner config. Triage before you file:
 | AGP: `Failed to install the following SDK components` / licence not accepted | **runner** | add `sdkmanager "platforms;android-35" "build-tools;35.0.0"` before the Gradle steps. Deliberately *not* pre-added — an untested provisioning step on an image that probably already has it just adds a new thing that can break the first run. |
 | `Permission denied: ./gradlew` | **runner/checkout** | file mode lost in transit. Blob is committed 100755, LF-only, `#!/bin/sh` — verified against `git show HEAD:mobile/gradlew`, not the working tree, so `core.autocrlf` is not masking a CR. |
 | `bad interpreter: /bin/sh^M` | **runner/checkout** | CRLF injected by checkout config. Not the committed blob. |
+| `[runner][FAIL] no 'node' on PATH. This stage needs it for: generateDesignTokens...` (fails in ~1s) | **runner** | image lacks Node. `:android` genuinely cannot build without it — design tokens are generated, not vendored. Not a code change. |
+| `generate.mjs failed` **and** the log shows `N pairings checked, M regression(s)` with M > 0 | **code — an ACCESSIBILITY regression** | this is the WCAG contrast gate, not a toolchain problem. A colour pairing in `mobile/design-tokens/tokens.json` dropped below its documented floor. File it against design-system. |
+| `Could not run node` from inside the Gradle task (i.e. the preflight was bypassed or the image lost Node mid-run) | **runner** | same as row above, caught later than it should have been. Tell devops-tencent the preflight was outflanked. |
 | Kotlin compile error, lint error, failing unit test, conformance vector divergence | **code** | file it against the owning agent. These are OS-independent and would fail on Windows too. |
+
+**The `generate.mjs` rows above matter more than they look.** Two completely different findings now
+surface from the same Gradle task: *Node is missing* (runner, nothing to do with the product) and
+*a WCAG contrast pairing regressed* (code, a real accessibility defect that should block). The
+generator prints `N pairings checked, M regression(s)` on a successful run, so that line is the
+discriminator — **if it is present, the toolchain worked and you are looking at a real finding.**
+Worth knowing that an accessibility regression can now fail an Android build at all; that is a
+deliberate property of generating tokens rather than vendoring them, not a side effect.
 
 **One-line bisect.** If a failure is ambiguous, flip `runs-on: ubuntu-latest` → `windows-latest` on
 the `android` job in `.github/workflows/ci.yml` and re-run. Windows passes ⇒ runner. Windows also

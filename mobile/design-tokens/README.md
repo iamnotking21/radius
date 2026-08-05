@@ -19,6 +19,38 @@ mobile/design-tokens/
     tokens.resolved.json   <- flat, fully-resolved (bonus artifact, see below)
 ```
 
+## Incident log
+
+**2026-08-05 — first `RadiusDesignTokens.kt` drop did not compile.** android-kotlin wired it into
+`:android:preBuild` and got a green build only because they added three asserting-rewrite
+workarounds in the Android build script (each fails loudly if its match count drops, so a real fix
+here is expected to make the shim delete itself). All three were bugs in `generate.mjs`, not in
+`tokens.json`:
+
+1. `import Color` (no package) — unresolvable. Fixed: `import androidx.compose.ui.graphics.Color as ComposeColor`.
+2. The nested `public object Color` shadowed the Compose `Color` type in all 30 `val` type
+   annotations. Fixed by using the `ComposeColor` alias for every type annotation *and*
+   constructor call, while keeping the nested object named `Color` — that's the name
+   `RadiusDesignTokens.Color.Surface.canvas` (the HANDOFF table below) depends on; renaming the
+   object instead would have been the obvious fix and the wrong one.
+3. **Kotlin block comments nest; Java's/JS's do not.** `Accent.Radar`'s KDoc contained the prose
+   "signal/\*" (a glob, not a comment token) — its embedded `/*` opened a nested comment, the
+   KDoc's own closing `*/` closed that nested one instead of the outer block, and the rest of the
+   file was swallowed. Surfaced as `Missing '}'` at EOF, nowhere near the cause. **Fixed generally,
+   not as a one-off patch**: every doc comment in `generate.mjs` is now built through a
+   `kdocLines()` helper that runs all prose through a sanitiser first (`/*` → `/ *`, `*/` → `* /`).
+   There is no other code path in the emitter that produces a `/** */` block, so there's nothing
+   left to forget to escape by hand — this protects every future doc comment, not just the one
+   that already broke.
+
+Also flagged by android-kotlin rather than silently patched around, and correctly left at M3
+defaults rather than have a value invented for them: this system has **no stroke-width scale** (a
+`BorderStroke` needs a dp, and none exists here — genuinely missing, not a documentation gap), and
+**no elevation/shadow dp values, no motion tokens, and nothing mapped to M3's `errorContainer` /
+`onErrorContainer` / `scrim` / `surfaceDim` / `surfaceBright`.** None of these exist as Figma
+variables either, so none are invented here — same rule as the status-colour-ramp gap above. Filed
+as open work, not fixed by guessing.
+
 ## Regenerating
 
 ```

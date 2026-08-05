@@ -98,6 +98,13 @@ summary() {
 # self-test suite against synthetic fixtures, it is fully blocking on every path, and it is what
 # proves these scripts still detect what they claim to detect.
 #
+# NOR CAN IT HIDE A BROKEN RUNNER, by construction: require_node() and require_android_toolchain()
+# call `exit` directly, which terminates the script before the tolerance below is ever reached. So a
+# missing Node or SDK on a known-red stage fails the build with a toolchain message instead of being
+# quietly absorbed as "expected red". Verified by running gate-battery with node stripped from PATH:
+# exit 1, toolchain message, no EXPECTED-RED summary. That ordering is load-bearing — do not "tidy"
+# these preflights into something that returns a status.
+#
 # TO RETIRE AN ENTRY: delete its line here. Nothing else. Do not edit the workflow YAML.
 known_red_reason() {
   case "$1" in
@@ -117,6 +124,32 @@ gradle_wrapper() {
     MINGW*|MSYS*|CYGWIN*) echo "./gradlew.bat" ;;
     *)                    echo "./gradlew" ;;
   esac
+}
+
+# require_node <why>  — assert Node is on PATH before a stage that cannot work without it.
+#
+# Node is a REAL build dependency of this repo now, not just a gate-script convenience. Two
+# independent reasons, and they fail in completely different places:
+#   1. EVERY `:android` Gradle task. mobile/android/build.gradle.kts hangs `generateDesignTokens`
+#      off `preBuild`, which runs mobile/design-tokens/scripts/generate.mjs — so tokens.json is the
+#      only place in the repo a colour value exists. VERIFIED by task-graph inspection, not assumed:
+#      `--dry-run` puts generateDesignTokens in the graph for testDebugUnitTest, lintDebug,
+#      assembleDebug, assembleRelease AND processDebug/ReleaseManifestForPackage. `:shared` alone
+#      does NOT pull it, which is why gate-conformance's node requirement below is a different one.
+#   2. The JS halves of two gates: vectors_manifest_check.js, battery_threshold_check.js.
+#
+# WHY THIS PREFLIGHT EXISTS AT ALL, given Gradle would fail anyway: a missing `node` would surface
+# from deep inside an :android Gradle task and read as an ANDROID BUILD FAILURE — i.e. as a code
+# regression — which is precisely the misattribution README §5b exists to prevent. One second and a
+# sentence beats six minutes and a stack trace.
+require_node() {
+  command -v node >/dev/null 2>&1 || {
+    err "no 'node' on PATH. This stage needs it for: $1"
+    err "Node is a build dependency of :android itself (design tokens are GENERATED from"
+    err "mobile/design-tokens/tokens.json at preBuild), not only of the gate scripts."
+    err "This is a RUNNER/TOOLCHAIN failure, not a code regression — see README.md sections 4 and 5b."
+    exit 1
+  }
 }
 
 # Preflight for anything that runs Gradle. mobile/local.properties is .gitignored (correctly — it
@@ -164,21 +197,33 @@ run_stage() {
 
     # -- battery: needs node, no JDK. Known-red, see registry above ------------------------------
     gate-battery)
-      command -v node >/dev/null 2>&1 || { err "node is required by battery_gate.sh"; exit 1; }
+      require_node "battery_gate.sh's threshold check (lib/battery_threshold_check.js)"
       bash devops/ci/gates/battery_gate.sh ;;
 
     # -- gradle stages ---------------------------------------------------------------------------
+    # EVERY one of these touches an `:android` task, and every `:android` task pulls
+    # generateDesignTokens via preBuild. Confirmed per-stage by task-graph inspection, not by
+    # assuming preBuild covers everything — build-manifests in particular looks like it might not,
+    # and does. `:shared`-only work does NOT need node for this reason.
     build-unit-test)
-      require_android_toolchain; gw="$(gradle_wrapper)"
+      require_android_toolchain
+      require_node "generateDesignTokens (:android:testDebugUnitTest -> preBuild)"
+      gw="$(gradle_wrapper)"
       ( cd mobile && "$gw" :shared:testDebugUnitTest :android:testDebugUnitTest --no-daemon ) ;;
     build-lint)
-      require_android_toolchain; gw="$(gradle_wrapper)"
+      require_android_toolchain
+      require_node "generateDesignTokens (:android:lintDebug -> preBuild)"
+      gw="$(gradle_wrapper)"
       ( cd mobile && "$gw" :android:lintDebug --no-daemon ) ;;
     build-assemble-debug)
-      require_android_toolchain; gw="$(gradle_wrapper)"
+      require_android_toolchain
+      require_node "generateDesignTokens (:android:assembleDebug -> preBuild)"
+      gw="$(gradle_wrapper)"
       ( cd mobile && "$gw" :android:assembleDebug --no-daemon ) ;;
     build-assemble-release)
-      require_android_toolchain; gw="$(gradle_wrapper)"
+      require_android_toolchain
+      require_node "generateDesignTokens (:android:assembleRelease -> preBuild)"
+      gw="$(gradle_wrapper)"
       ( cd mobile && "$gw" :android:assembleRelease --no-daemon ) ;;
 
     # MERGED MANIFESTS, BOTH VARIANTS, WITHOUT BUILDING EITHER APP.
@@ -197,7 +242,9 @@ run_stage() {
     # reported as a BUILD failure, not as a permission violation — same attribution discipline as
     # README §5b. A missing manifest must never be able to read as "the permission check passed".
     build-manifests)
-      require_android_toolchain; gw="$(gradle_wrapper)"
+      require_android_toolchain
+      require_node "generateDesignTokens (:android:process*ManifestForPackage -> preBuild)"
+      gw="$(gradle_wrapper)"
       ( cd mobile && "$gw" :android:processDebugManifestForPackage \
                            :android:processReleaseManifestForPackage --no-daemon ) ;;
 
@@ -220,7 +267,10 @@ run_stage() {
     # -- conformance: needs node (phase 1) + JDK/SDK (phase 2, authoritative) ---------------------
     gate-conformance)
       require_android_toolchain
-      command -v node >/dev/null 2>&1 || { err "node is required by conformance_gate.sh phase 1"; exit 1; }
+      # NOTE the reason differs from the build-* stages above: this gate's Gradle work is
+      # `:shared:testDebugUnitTest`, which does NOT pull generateDesignTokens. Node is needed here
+      # for the gate's own phase-1 manifest pre-check.
+      require_node "conformance_gate.sh phase 1 (lib/vectors_manifest_check.js)"
       # SELF-RETIRED TRIPWIRE, currently dormant. B12/HANDOFF-1: conformance_gate.sh used to invoke
       # `./gradlew.bat` directly, a Windows-only entrypoint, which made this stage unrunnable on a
       # POSIX runner — and would have failed with a useless "no such file" rather than the reason.

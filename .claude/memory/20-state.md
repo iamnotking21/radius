@@ -240,3 +240,70 @@ DEFERRED: all iOS · Mac · Carrier B validation · B7 · relay-only calling (G5
   arrives on the intent and start() requires it. 52 unit tests green, lintDebug clean,
   assembleDebug green. STILL NO DEVICE: none of this has been seen on hardware, and the a11y claim
   here is arithmetic on token values, not a TalkBack or 200%-font-scale pass on a real handset.
+2026-08-05 devops-tencent · NODE ASSERTED IN THE STAGE TABLE. Design tokens are GENERATED
+  (generateDesignTokens off preBuild), so node is now a build dependency of :android itself, not
+  just a gate helper. Verified WHICH stages by task-graph inspection rather than assuming preBuild
+  covers everything: --dry-run puts generateDesignTokens in the graph for testDebugUnitTest,
+  lintDebug, assembleDebug, assembleRelease AND processDebug/ReleaseManifestForPackage; :shared
+  alone does NOT pull it (so gate-conformance's node need is a DIFFERENT one — phase-1
+  vectors_manifest_check.js — and its message says so).
+  New require_node <reason> helper; every existing ad-hoc `command -v node` replaced so there is one
+  message shape. Proved it by stripping node from PATH: build-lint, build-manifests,
+  gate-conformance, gate-battery each fail in ~1s naming their own reason.
+  PROPERTY WORTH KNOWING, now pinned in-source: require_node/require_android_toolchain call `exit`
+  DIRECTLY, so they terminate before the known-red tolerance is reached. A missing node on
+  gate-battery therefore fails the build with a toolchain message instead of being absorbed as
+  "expected red". The tolerance cannot hide a broken RUNNER any more than it can hide a broken gate.
+  Do not tidy those preflights into something that returns a status.
+  README §5b triage table gained 3 rows for the new failure mode. The valuable one: a node failure
+  and a WCAG CONTRAST regression now surface from the SAME Gradle task and are completely different
+  findings. Discriminator is the generator's own line `N pairings checked, M regression(s)` — if it
+  printed, the toolchain worked and you are looking at a real finding. An accessibility regression
+  can now fail an Android build; that is a deliberate property of generating tokens, not a bug.
+  *** FOUND WHILE VERIFYING, NOT MINE TO FIX, LIVE RIGHT NOW: every :android stage is RED.
+  `:android:generateDesignTokens` fails with 'Design-token rewrite "drop the unresolvable
+  `import Color` (generator bug 1)" matched 0 times, expected at least 1.' Cause is an UNCOMMITTED,
+  in-flight edit to mobile/design-tokens/scripts/generate.mjs (design-system, +307/-206) that fixes
+  exactly that bug — it now imports the real type as ComposeColor and emits `ComposeColor(0xFF..)`,
+  so the bare `import Color` line android-kotlin's shim compensates for is gone. android-kotlin's
+  own DELETE RULE in mobile/android/build.gradle.kts already prescribes the fix: "when generate.mjs
+  emits compilable Kotlin, delete [rewrites] entirely". THIS IS THE SHIM WORKING, not a defect —
+  it refused to silently rewrite output whose shape it no longer recognises. NEEDS: design-system
+  to land the generator change, then android-kotlin to delete [rewrites]. Contrast gate itself is
+  GREEN throughout (48 pairings, 0 regressions), which is how I could tell these apart in one line.
+  It was green ~20 min earlier in the same session, so it landed mid-sweep. NOT caused by my change:
+  my diff adds preflights only, and the fast gates + gate-conformance stay green. ***
+  RE-VERIFIED: 4 YAMLs parse, bash -n clean, 5 fast gates + gate-conformance exit 0, known-red pair
+  still 0 push / 1 strict. STILL: nothing has ever run in CI.
+
+## android-kotlin — 2026-08-05 — shims deleted, :android green cold
+design-system landed the generator fix; all three token rewrites are DELETED from
+mobile/android/build.gradle.kts. The asserting shim did its job end to end: it went red on good
+news, named the rewrite to remove, and the removal is now done. Only the package rewrite remains —
+that is HANDOFF step 1, delegated to the consumer, not a workaround. It still asserts exactly one
+`package com.radius.designtokens.generated` line.
+VERIFIED COLD (build/ dirs wiped, JDK21): :android:assembleDebug + :android:testDebugUnitTest +
+:android:lintDebug all BUILD SUCCESSFUL. 52 unit tests, 0 failures. Lint 51 issues, ALL Warning,
+0 Error (GradleDependency/UnusedResources/MissingApplicationIcon scaffold noise, pre-existing).
+Contrast gate prints "48 pairings checked, 0 regression(s)" on every build. APK produced.
+Generated file now differs from generate.mjs's raw emission by the package line ONLY (diff = 1 line).
+*** THE TRAP THAT BIT ME, AND IT IS THE SAME ONE THREE TIMES NOW: while writing the KDoc that
+explains generator bug 3, I typed a literal block-comment opener INSIDE that KDoc. Kotlin block
+comments NEST, so it opened a nested comment, my KDoc's terminator closed only the nested one, and
+everything from that KDoc to EOF — the task registration, the preBuild hook, and the whole
+dependencies{} block — was silently commented out. Gradle reported NO syntax error. It reported
+"The Hilt Android Gradle plugin is applied but no com.google.dagger:hilt-android dependency was
+found", because from its point of view dependencies{} genuinely was not there. Diagnosed with an
+init-script probe: `implementation` had 0 declared deps, 2 across all configurations, vs 23 on the
+working file. design-system hit the identical trap writing its own note about the bug; that is now
+three independent hits, which is why their structural docSafe() fix was right and why a one-off
+would not have been. RULE: never write a raw block-comment opener in a Kotlin doc comment — spell
+it out in words. A `dependencies{}` block can vanish with no syntax error at all. ***
+Token hygiene re-greped: ZERO raw hex and ZERO raw dp/sp on non-comment lines across
+mobile/android/src/. Only res/ numeric is ic_radar_notification.xml's own 24dp intrinsic size —
+the platform notification-icon spec, i.e. asset geometry, documented in-file as not layout spacing.
+STILL OPEN, NOT MINE: Fraunces/Inter absent, type metrics wired to UNBRANDED FALLBACK platform
+fonts pending the founder's bundled-OFL-vs-Downloadable-Fonts call. No stroke-width/elevation/
+motion tokens and nothing for M3 errorContainer/scrim/surfaceDim/surfaceBright — design-system
+deliberately did not invent those, so M3 defaults stand.
+STILL TRUE: no BLE has run on real hardware. Nothing here is a Phase 0 spike result.
