@@ -18,14 +18,18 @@ Premium dating app. The moat is **BLE proximity** — finding and chatting with 
 | Area | State |
 |---|---|
 | BLE wire spec + 116 conformance vectors | Written, executing, security-reviewed |
-| Protocol codec (frame, key schedule, banding) | One Kotlin implementation, 63 tests green |
+| Protocol codec (frame, key schedule, banding) | One Kotlin implementation, 126 tests green |
 | Android radio (`android.bluetooth.le`) | Real advertise + scan, role-gated, never on a device |
 | Phase 0 spike harness | Built. Logs raw sightings + radio lifecycle, counts its own losses |
-| CI gates | 6 gates, 39 self-tests, running on GitHub Actions |
+| CI gates | 9 gates, 95 self-tests, green on GitHub Actions |
+| Design system | Tokens from Figma, generated at build time. A WCAG contrast regression across 51 pairings fails the Android build. Fonts not yet chosen. |
+| Code review | Two full passes. 20 must-fixes found and landed. |
 | iOS | Scaffold only. Has never been compiled — needs a Mac |
-| Backend, web, infra, design tokens | **Nothing.** Not started, correctly — Phase 0 gates them |
+| Backend, web, infra | **Nothing.** Not started, correctly — Phase 0 gates them |
 
-Roughly **4%** of v1. The advanced part is the moat; almost everything else is zero.
+Roughly **8%** of v1. The advanced part is the moat; almost everything else is zero.
+
+That number moves slowly on purpose. The work since Phase 0 began has gone into making the instrument trustworthy rather than into features — because a spike that returns confident garbage is worse than one that crashes, and you would act on it.
 
 ## The constraints that shape everything
 
