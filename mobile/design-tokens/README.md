@@ -1,0 +1,247 @@
+# mobile/design-tokens
+
+Single source of truth for colour, type, spacing, radius, and elevation. Owner: `design-system`.
+
+> A raw hex or magic dp/sp number anywhere outside this directory is a bug. If you find one in
+> platform code, file it against the owning agent — don't quietly fix it in their file (agent
+> write boundaries, root CLAUDE.md).
+
+## What's here
+
+```
+mobile/design-tokens/
+  tokens.json              <- the source of truth. primitives (exact, from Figma) + a
+                               hand-designed semantic layer (roles, not appearances).
+  scripts/generate.mjs     <- reads tokens.json, resolves references, verifies contrast,
+                               emits platform output. zero npm dependencies.
+  build/                   <- generated. do not hand-edit anything under here.
+    android/RadiusDesignTokens.kt
+    tokens.resolved.json   <- flat, fully-resolved (bonus artifact, see below)
+```
+
+## Regenerating
+
+```
+cd mobile/design-tokens
+node scripts/generate.mjs
+```
+
+Node only, no install step — this repo has no `package.json`/npm project anywhere yet, and adding
+one (e.g. to bring in Style Dictionary, which is what `mobile/CLAUDE.md`'s caveman header names as
+the eventual toolchain) is a new 3rd-party dependency, which per `.claude/ORCHESTRATION.md` §8
+requires escalation, not a unilateral call on a first token drop. `generate.mjs` does the same job
+— resolve references, emit per-platform source — with the Node standard library only. `tokens.json`'s
+shape (primitives + `{a.b.c}` semantic references) is close enough to Style Dictionary's model that
+adopting it later is a config file, not a rewrite.
+
+The script does three things, in order, every run:
+1. Resolves every `{dot.path}` reference in `tokens.json` to a literal (cycle-checked).
+2. **Re-derives WCAG 2.1 contrast ratios for every documented pairing and gates on them.** This is
+   the "checked, not asserted" mechanism the brief asked for, made permanent: if a future edit to a
+   primitive quietly breaks a documented guarantee, `generate.mjs` exits non-zero and names the
+   exact pairing and the ratio it dropped to. It is not a one-time report — it reruns every time.
+3. Emits `build/android/RadiusDesignTokens.kt` and a bonus `build/tokens.resolved.json` (flat,
+   fully resolved — not required by the current handoff, but it's what a future Swift/TS generator
+   would read instead of re-implementing reference resolution from scratch).
+
+## The semantic layer — how it's organised, and why
+
+Figma's Foundations page only binds *primitives* as variables (`ink/950`, `ember/400`, …). Its own
+Color System frame says "never use primitives directly — use semantic aliases," but those aliases
+aren't defined anywhere in the file. Designing them was this task. They're organised by **role**,
+never by appearance, so a palette change never forces a rename:
+
+- **`surface.*`** — the elevation ladder (`canvas` → `sunken` → `base` → `raised` → `overlay` →
+  `modal`), one ink step lighter per level, per Figma's own note: *"on dark, elevation = surface
+  lightening + hairline first, shadow second."* No shadow blur/offset/opacity values exist as Figma
+  variables, so none are invented here.
+- **`content.*`** — text/icon roles: `primary`, `secondary`, `tertiary` (restricted, see below),
+  `disabled` (restricted), `onFill` (text on a saturated accent/status fill), `onWash` (text on a
+  tinted accent wash).
+- **`border.*`** — `hairline` (decorative dividers), `subtle` (resting borders, must pair with a
+  fill/elevation change), `interactive` (the sole edge of a tappable/focusable control — this one
+  had to be a different primitive than `hairline`/`subtle`, see the border finding below), `danger`
+  (error-state field border).
+- **`accent.*`** — four accents, each **scoped to a mode or moment**, never co-primary on one
+  screen: `discover` (ember, DISCOVER mode), `radar` (signal, RADAR mode, reserved per root
+  CLAUDE.md), `like` (bloom, the like/match moment specifically — see note below), `threads`
+  (deliberately a neutral ink tone, not a hue — Threads "favours neither" origin).
+- **`status.*`** — `success`/`warning`/`danger`/`info`, `default` only (see the status-ramp finding
+  below).
+- **`state.*`** — `pressed`/`disabled`/`focus`, expressed as references to the tokens above (a
+  state is "which named token," never a computed alpha overlay — there are no alpha primitives to
+  compute from).
+
+### Why `bloom` is its own accent, not an ember sub-shade
+
+The colour brief itself labels `bloom/400` "**likes**." `docs/SCREEN_INVENTORY.md` lists a
+dedicated Likes You / Standouts flow inside Discover. "One accent per screen" (root CLAUDE.md)
+doesn't mean *one accent color exists in the whole app* — it means a screen doesn't get two accents
+fighting each other. A like/match-moment screen may make `accent.like` its one primary accent,
+**replacing** ember for that screen, not joining it. That's the reading encoded in `tokens.json`.
+
+### Why Threads has no hue
+
+Root CLAUDE.md: "THREADS — one inbox, both origins. label transport." Giving Threads its own
+saturated colour would visually promote it to a third mode competing with Discover/Radar, which
+contradicts the point of a unified inbox. `accent.threads.default` is `ink/200` — neutral, but
+distinctly visible (10.75–11.15:1 against canvas/base), enough to drive a selected-tab indicator
+without introducing a fourth hue.
+
+## Accessibility — checked, not asserted
+
+All ratios below are from `node scripts/generate.mjs`'s own contrast pass (WCAG 2.1 relative
+luminance, sRGB), re-derived from `tokens.json` every run — not hand-computed once and pasted here
+to rot. 48 pairings are checked; the table below is that same run, unedited.
+
+### Your specific question: `ink/500 #55556a` on `ink/900 #101017`
+
+**2.61:1.** Not marginal — a clear fail against both AA normal-text (4.5:1) and even the AA
+large-text/non-text floor (3:1). It only clears at all because WCAG explicitly exempts *disabled*
+controls from SC 1.4.3 and SC 1.4.11. `content.disabled` = `ink/500` is legal **only** as a
+disabled-state cue, and root CLAUDE.md's "never colour alone" law still applies on top of that
+exemption: disabled state must also be carried structurally (no elevation, no interactivity,
+`enabled=false` semantics), never by this colour by itself. It must never be used for text meant to
+be read as live information. This restriction is written directly into `tokens.json`'s
+`content.disabled` node and into the generated Kotlin KDoc, not just here.
+
+### Full pass/fail table (of the 48; failures/restrictions annotated)
+
+| Pairing | Ratio | Floor | Status |
+|---|---|---|---|
+| `content.primary` on all 5 surfaces | 14.12 – 18.36:1 | 4.5 | PASS (AAA everywhere) |
+| `content.secondary` on all 5 surfaces | 5.60 – 7.29:1 | 4.5 | PASS |
+| `content.tertiary` on canvas / base | 4.69 / 4.52:1 | 4.5 | PASS (base is only 0.02 above the floor) |
+| `content.tertiary` on raised / overlay / modal | 4.29 / 3.98 / 3.60:1 | 4.5 | **FAIL** for body text. Restricted to large text / icons only on these three surfaces (all clear 3:1). |
+| `content.disabled` on canvas / base / raised | 2.71 / 2.61 / 2.48:1 | 4.5 (3.0 large) | **FAIL both floors.** WCAG-exempt disabled-state use only — see above. |
+| `border.hairline` on canvas / base | 1.18 / 1.14:1 | 3.0 (non-text) | **FAIL.** By design: decorative content dividers are not a "UI component" under SC 1.4.11. Never use as the sole edge of an interactive element. |
+| `border.subtle` on canvas / base | 1.49 / 1.44:1 | 3.0 | **FAIL.** Must always pair with a fill/elevation difference; never the sole boundary cue. |
+| `border.interactive` on canvas / base | 4.69 / 4.52:1 | 3.0 | PASS |
+| `border.danger` on canvas / base | 5.33 / 5.14:1 | 3.0 | PASS |
+| `accent.discover/radar/like/threads.default` on canvas / base | 6.60 – 11.15:1 | 4.5 | PASS all |
+| `status.success/warning/danger/info.default` on canvas | 5.33 – 9.42:1 | 4.5 | PASS all |
+| `content.onFill` on all 7 saturated fills (ember/signal/bloom/success/warning/danger/info) | 5.14 – 9.96:1 | 4.5 | PASS all — one token, safe everywhere |
+| `content.onWash` on all 3 accent washes | 5.20 – 7.02:1 | 4.5 | PASS all |
+
+Run `node scripts/generate.mjs` for the live, unabridged 48-row table with exact figures.
+
+### Findings from doing the math instead of eyeballing it
+
+1. **`border.*` needed a real split, not one token.** My first instinct was one `outline` colour
+   for both decorative dividers and interactive-control edges (that's what the current
+   `RadiusColors.Placeholder.outline` field does today). The math kills that: every ink step
+   subtle/dark enough to *look* like a quiet hairline (`ink/700`, `ink/800`) fails the 3:1 non-text
+   floor outright (1.14–1.49:1). The only ink step that clears 3:1 against `canvas`/`base` is
+   `ink/400` (4.52–4.69:1) — three steps lighter than what "should" look like a subtle border by
+   eye. `tokens.json` now has `border.hairline` / `border.subtle` (decorative, sub-3:1, by design)
+   and `border.interactive` (`ink/400`, the only one legal as a sole component edge). **Flagging
+   for android-kotlin:** `OutlinedButton`'s stroke in `RadarScreen.kt` currently maps to the single
+   `outline` field — once split, it needs `border.interactive`, not `border.hairline`/`subtle`,
+   or its tap boundary is invisible to anyone relying on contrast to find it.
+2. **Status colours (`success`/`warning`/`danger`/`info`) only have one stop each** — `/400` — vs.
+   3–7 stops for `ink`/`ember`/`bloom`/`signal`. That blocks defining a `pressed` or `wash` tier
+   for status colours without inventing hex, which I was told not to do. `status.*` in
+   `tokens.json` is deliberately limited to `default` (+ shared `content.onFill` for anything drawn
+   on a status fill) until Figma extends the ramps. Not silently patched — filed here and in
+   `tokens.json`'s `status.$note`.
+3. **A naive "coloured icon on its own wash" pattern is inconsistent across accents and must not
+   be used.** I checked whether `accent.<mode>.default` (e.g. `signal/400`) could sit directly on
+   its own `wash` (`signal/600`) for a "lit icon on tinted background" look. `ember/400` on
+   `ember/700` clears 3:1 (3.48:1), but `signal/400` on `signal/600` (2.82:1) and `bloom/400` on
+   `bloom/600` (2.25:1) both fail it. Rather than ship a pattern that's fine on one accent and
+   broken on two, `content.onWash` (`ink/50`, verified 5.20–7.02:1 on all three washes) is the one
+   rule for text *and* icon on any wash surface.
+4. **The spacing scale already hardcoded into `RadiusTheme.kt` does not match Figma's real 4pt
+   grid**, and this is exactly the "second set of placeholder values… hardening" this task exists
+   to stop. `RadiusSpacing` today is `xs=4, sm=8, md=16, lg=24, xl=32` (plus `touchTarget=48`) —
+   missing the `2, 6, 12, 20, 40, 64, 80` steps Figma actually specifies, and using different names
+   for the steps it does have. `RadiusDesignTokens.Spacing` in the generated Kotlin carries the
+   real 14-step scale (`space0`…`space80`). `touchTarget` itself (48dp) is not part of the 4pt
+   scale in Figma's Foundations — it's an accessibility floor, not a spacing step — so it isn't in
+   this file; keep it where it is in `RadiusTheme.kt`, it already satisfies "min touch target 44pt
+   ALWAYS" (48dp > the 44pt/44dp Apple-HIG-derived floor).
+
+### `overline` tracking (8) — is it a unit error?
+
+Read literally, `letterSpacing` for `overline` (8) is a 5x jump from `label.s` (1.5), with no
+intermediate step, while every other row in the ramp moves in ~0.5 increments. I don't have Figma
+access to check the API's `unit` field directly, so I can't fully resolve the ambiguity, but here's
+what I concluded and why I didn't "fix" it:
+
+- If the unit is **px** (my working assumption, consistent with the rest of the ramp reading like
+  small px values, not percentages), 8px of tracking on an 11px uppercase label is dramatic but not
+  unheard of — wide-tracked all-caps micro-labels ("eyebrow" text) are a standard move in editorial
+  type systems, and Fraunces (a literary/editorial serif) + this brand's vocabulary (ink/ember/bloom)
+  reads as exactly that kind of system.
+- If the unit is actually **percent-of-size** (Figma's other native mode), 8% of an 11px font is
+  ≈0.88px absolute — genuinely modest, in line with (even slightly more conservative than) Material
+  Design's own overline spec.
+- Both readings land on "plausible, probably intentional." Neither reading suggests a stray extra
+  digit (a true typo would more likely read as a doubled value like 1.5→3, not a jump to 8).
+
+**Conclusion: applied literally (`8f.sp` in the generated Kotlin), flagged, not silently altered.**
+This is called out inline in `tokens.json`'s `type.scale.overline.flag` and in the generated file's
+KDoc. Confirm against the live Figma file before treating it as load-bearing for a shipped screen.
+
+## Light theme
+
+Not included. The brief said light theme should be "a full second mode, not an afterthought" — but
+Figma Foundations has not bound a single light-mode variable; I checked the file's variable
+collection and only the dark-first ramp above exists. Fabricating light-mode hex values wasn't an
+option (same rule as everything else: no raw value invented outside what was extracted). `tokens.json`
+has `semantic.color.light: null` as an explicit placeholder — the shape is ready, the values aren't.
+This means `RadiusTheme.kt` forcing dark unconditionally today is correct, not a shortcut to fix
+later — it's honestly representing what's actually designed.
+
+## Font delivery — explicitly not decided here
+
+`type.family` in `tokens.json` and `RadiusDesignTokens.Type` in the generated Kotlin carry Fraunces
+and Inter as **logical family names only** (`"display"` / `"ui"`), not bound `FontFamily` objects.
+Both are open-licence (OFL) — Fraunces (Undercase Type) and Inter (Rasmus Andersson), both
+distributed via Google Fonts / their own GitHub repos — but *how* they get into the app (bundled
+`.ttf`/`.otf` resources vs. Android's Downloadable Fonts API vs. something else) is a new
+resource/dependency decision, which per ORCHESTRATION §8 needs a go-ahead, not a unilateral call
+made inside a token-extraction task. Flagging as an open item for android-kotlin / orchestrator.
+
+## HANDOFF — what android-kotlin needs to do
+
+**I did not edit `RadiusTheme.kt`.** It's your file (`mobile/android → android-kotlin`, root
+CLAUDE.md repo map); I only write in `mobile/design-tokens/`. Here's the exact swap:
+
+1. Copy `mobile/design-tokens/build/android/RadiusDesignTokens.kt` into your `:android` sourceSet
+   (e.g. `mobile/android/src/main/kotlin/com/radius/android/ui/theme/`), and update its `package`
+   line to wherever you land it — I left it as a clearly-non-colliding placeholder
+   (`com.radius.designtokens.generated`) on purpose so it can't silently shadow anything of yours.
+2. In `RadiusColors.Placeholder`, replace the hardcoded hex with references into the generated
+   object. The current flat field set maps 1:1 like this:
+
+   | Current `RadiusColors` field | Replace with |
+   |---|---|
+   | `background` | `RadiusDesignTokens.Color.Surface.canvas` |
+   | `surface` | `RadiusDesignTokens.Color.Surface.base` |
+   | `surfaceRaised` | `RadiusDesignTokens.Color.Surface.raised` |
+   | `ink` | `RadiusDesignTokens.Color.Content.primary` |
+   | `inkMuted` | `RadiusDesignTokens.Color.Content.secondary` |
+   | `accentDiscover` | `RadiusDesignTokens.Color.Accent.Discover.default` |
+   | `accentRadar` | `RadiusDesignTokens.Color.Accent.Radar.default` |
+   | `accentThreads` | `RadiusDesignTokens.Color.Accent.Threads.default` |
+   | `danger` | `RadiusDesignTokens.Color.Status.Danger.default` |
+   | `outline` | **See finding #1 above before you pick one.** `HorizontalDivider` in `RadarScreen.kt` wants `border.hairline`; `OutlinedButton` wants `border.interactive` (`ink/400`) — the current single `outline` field can't correctly serve both, since only `border.interactive` clears the 3:1 non-text floor. Recommend splitting `outline` into two fields rather than picking one value that's wrong for one of the two call sites. |
+
+3. Update `RadiusColors` (the data class) and `RadiusSpacing` to grow into the fuller role set once
+   you're ready — `Border.{hairline,subtle,interactive,danger}`, `Accent.Like.*`,
+   `Status.{Success,Warning,Info}`, and the full `Spacing.space0…space80` ramp are all generated and
+   waiting; nothing forces you to wire them all in this pass, but they exist so the next 74 screens
+   in `docs/SCREEN_INVENTORY.md` don't need a second token-extraction round.
+4. `RadiusSpacing`'s current values (`xs=4, sm=8, md=16, lg=24, xl=32`) don't match the real
+   4pt-grid — see finding #4. Recommend replacing with `RadiusDesignTokens.Spacing` wholesale rather
+   than patching individual values.
+5. Radius/shape tokens (`RadiusDesignTokens.Radius`) and the type scale
+   (`RadiusDesignTokens.Type`) don't have a home in `RadiusTheme.kt` yet (it currently defers to
+   stock M3 shapes/typography). They're generated and ready whenever you want to wire them; no
+   urgency implied, your call on sequencing.
+6. Once wired, delete the `!! PLACEHOLDER VALUES !!` banner and the `RadiusColors.Placeholder`
+   naming — it stops being a placeholder at that point.
+
+I have not touched `mobile/android/` — verify the above compiles on your side; I don't have a path
+to run `:android:assembleDebug` without writing into a directory I don't own.
