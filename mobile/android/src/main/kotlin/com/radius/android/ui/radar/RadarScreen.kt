@@ -67,13 +67,13 @@ fun RadarScreen() {
             // Scrollable even though it looks short: at 200% font scale this content is taller
             // than a phone screen, and clipped safety controls are not acceptable.
             .verticalScroll(rememberScrollState())
-            .padding(RadiusTheme.spacing.md),
-        verticalArrangement = Arrangement.spacedBy(RadiusTheme.spacing.md),
+            .padding(RadiusTheme.spacing.space16),
+        verticalArrangement = Arrangement.spacedBy(RadiusTheme.spacing.space16),
     ) {
         Text(
             text = stringResource(R.string.radar_title),
             style = MaterialTheme.typography.headlineMedium,
-            color = RadiusTheme.colors.ink,
+            color = RadiusTheme.colors.content.primary,
             modifier = Modifier.semantics { heading() },
         )
 
@@ -82,7 +82,11 @@ fun RadarScreen() {
             onChange = { isGhost = it },
         )
 
-        HorizontalDivider(color = RadiusTheme.colors.outline)
+        // DECORATIVE divider — border.hairline, explicitly. It is 1.14–1.18:1 against the surface,
+        // which is legal precisely because a content divider is not a UI component under WCAG SC
+        // 1.4.11. It is NOT the same value as the button's edge below, and the two must never be
+        // collapsed back into one "outline" token again: see RadiusBorders.
+        HorizontalDivider(color = RadiusTheme.colors.border.hairline)
 
         OutlinedButton(
             onClick = {
@@ -90,9 +94,17 @@ fun RadarScreen() {
                 // without the runtime BLUETOOTH_SCAN / BLUETOOTH_ADVERTISE grants, and the
                 // permission-request flow is not built yet. Wiring a button that throws is worse
                 // than a button that admits it does nothing.
-                // TODO(radar): permission rationale flow -> RadarForegroundService.start(context).
+                // TODO(radar): permission rationale flow -> RadarForegroundService.start(context, isGhost).
             },
             enabled = false,
+            // THE STROKE IS THIS CONTROL'S ONLY VISIBLE AFFORDANCE. It resolves to
+            // border.interactive (4.52–4.69:1, clears the 3:1 non-text floor) via
+            // MaterialTheme.colorScheme.outline, which RadiusTheme now maps deliberately — see the
+            // FINDING #1 block there. It is left to resolve through the scheme rather than being
+            // hand-rolled as a BorderStroke here for two reasons: there is no stroke-WIDTH token to
+            // build one from without inventing a dp value, and an explicit border would override
+            // M3's enabled/disabled stroke handling, which matters because this button ships
+            // disabled today and must not look tappable while it is.
             modifier = Modifier.heightIn(min = RadiusTheme.spacing.touchTarget),
         ) {
             Text(stringResource(R.string.radar_start))
@@ -101,25 +113,25 @@ fun RadarScreen() {
         Text(
             text = stringResource(R.string.radar_placeholder_note),
             style = MaterialTheme.typography.bodySmall,
-            color = RadiusTheme.colors.inkMuted,
+            color = RadiusTheme.colors.content.secondary,
         )
 
         // ---- the list equivalent. Not a fallback: the primary accessible representation. ----
         Text(
             text = stringResource(R.string.radar_list_heading),
             style = MaterialTheme.typography.titleMedium,
-            color = RadiusTheme.colors.ink,
+            color = RadiusTheme.colors.content.primary,
             modifier = Modifier.semantics { heading() },
         )
         Text(
             text = stringResource(R.string.radar_list_a11y_note),
             style = MaterialTheme.typography.bodySmall,
-            color = RadiusTheme.colors.inkMuted,
+            color = RadiusTheme.colors.content.secondary,
         )
         Text(
             text = stringResource(R.string.radar_empty),
             style = MaterialTheme.typography.bodyMedium,
-            color = RadiusTheme.colors.inkMuted,
+            color = RadiusTheme.colors.content.secondary,
         )
     }
 }
@@ -155,12 +167,12 @@ private fun GhostModeControl(
             Text(
                 text = stringResource(R.string.radar_ghost_label),
                 style = MaterialTheme.typography.titleMedium,
-                color = RadiusTheme.colors.ink,
+                color = RadiusTheme.colors.content.primary,
             )
             Text(
                 text = stringResource(R.string.radar_ghost_description),
                 style = MaterialTheme.typography.bodySmall,
-                color = RadiusTheme.colors.inkMuted,
+                color = RadiusTheme.colors.content.secondary,
             )
         }
         Switch(
@@ -178,7 +190,7 @@ private fun GhostModeControl(
             if (isGhost) R.string.radar_ghost_on_announcement else R.string.radar_ghost_off_announcement,
         ),
         style = MaterialTheme.typography.bodySmall,
-        color = if (isGhost) RadiusTheme.colors.accentRadar else RadiusTheme.colors.inkMuted,
+        color = if (isGhost) RadiusTheme.colors.accent.radar.default else RadiusTheme.colors.content.secondary,
         modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite },
     )
 }

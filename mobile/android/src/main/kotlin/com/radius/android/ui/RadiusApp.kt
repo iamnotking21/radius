@@ -42,10 +42,10 @@ fun RadiusApp() {
     var selected by rememberSaveable { mutableStateOf(RadiusDestination.DISCOVER) }
 
     Scaffold(
-        containerColor = RadiusTheme.colors.background,
+        containerColor = RadiusTheme.colors.surface.canvas,
         bottomBar = {
             NavigationBar(
-                containerColor = RadiusTheme.colors.surface,
+                containerColor = RadiusTheme.colors.surface.base,
             ) {
                 RadiusDestination.entries.forEach { destination ->
                     val label = stringResource(destination.labelRes)
@@ -58,7 +58,7 @@ fun RadiusApp() {
                             // would look finished and quietly become permanent.
                             Box(
                                 Modifier
-                                    .size(RadiusTheme.spacing.sm)
+                                    .size(RadiusTheme.spacing.space8)
                                     .background(destination.accent(), CircleShape),
                             )
                         },
@@ -67,9 +67,9 @@ fun RadiusApp() {
                         // TalkBack user both lose. The label is not decoration.
                         alwaysShowLabel = true,
                         colors = NavigationBarItemDefaults.colors(
-                            selectedTextColor = RadiusTheme.colors.ink,
-                            unselectedTextColor = RadiusTheme.colors.inkMuted,
-                            indicatorColor = RadiusTheme.colors.surfaceRaised,
+                            selectedTextColor = RadiusTheme.colors.content.primary,
+                            unselectedTextColor = RadiusTheme.colors.content.secondary,
+                            indicatorColor = RadiusTheme.colors.surface.raised,
                         ),
                         // No custom semantics here on purpose: NavigationBarItem already announces
                         // selected state to TalkBack correctly. Overriding it usually makes it worse.
@@ -104,7 +104,7 @@ enum class RadiusDestination(val labelRes: Int) {
 
 @Composable
 private fun RadiusDestination.accent(): Color = when (this) {
-    RadiusDestination.DISCOVER -> RadiusTheme.colors.accentDiscover
-    RadiusDestination.RADAR -> RadiusTheme.colors.accentRadar
-    RadiusDestination.THREADS -> RadiusTheme.colors.accentThreads
+    RadiusDestination.DISCOVER -> RadiusTheme.colors.accent.discover.default
+    RadiusDestination.RADAR -> RadiusTheme.colors.accent.radar.default
+    RadiusDestination.THREADS -> RadiusTheme.colors.accent.threads
 }

@@ -36,24 +36,24 @@ fun ThreadsScreen() {
         modifier = Modifier
             .fillMaxSize()
             .verticalScroll(rememberScrollState())
-            .padding(RadiusTheme.spacing.md),
-        verticalArrangement = Arrangement.spacedBy(RadiusTheme.spacing.sm),
+            .padding(RadiusTheme.spacing.space16),
+        verticalArrangement = Arrangement.spacedBy(RadiusTheme.spacing.space8),
     ) {
         Text(
             text = stringResource(R.string.threads_title),
             style = MaterialTheme.typography.headlineMedium,
-            color = RadiusTheme.colors.ink,
+            color = RadiusTheme.colors.content.primary,
             modifier = Modifier.semantics { heading() },
         )
         Text(
             text = stringResource(R.string.threads_empty),
             style = MaterialTheme.typography.bodyMedium,
-            color = RadiusTheme.colors.inkMuted,
+            color = RadiusTheme.colors.content.secondary,
         )
         Text(
             text = stringResource(R.string.threads_placeholder_note),
             style = MaterialTheme.typography.bodySmall,
-            color = RadiusTheme.colors.inkMuted,
+            color = RadiusTheme.colors.content.secondary,
         )
     }
 }

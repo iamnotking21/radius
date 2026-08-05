@@ -50,7 +50,22 @@ class RadarForegroundService : LifecycleService() {
     @Inject
     lateinit var bleRadio: BleRadio
 
-    // TODO(radar): hoist to shared core state once RadiusCore.create() is implemented.
+    /**
+     * Drives which copy the notification shows. It was previously declared and never assigned, so
+     * [RadarNotifications.build] always rendered the non-ghost string — a user in ghost mode read
+     * "Discovering people nearby" in the shade and would reasonably conclude ghost mode had failed.
+     * That is a safety-surface lie, not a cosmetic bug (SAFETY INVARIANT 10).
+     *
+     * It is set from [EXTRA_GHOST] on [ACTION_START], because the caller is the only thing that
+     * currently knows the answer.
+     *
+     * TODO(radar): source from shared core state once RadiusCore.create() is implemented. Until
+     *  then note the gap: on a START_STICKY restart the system redelivers a null intent, so a
+     *  restarted service falls back to whatever this process last knew — and after true process
+     *  death, to false. A ghost user could see non-ghost copy after an OEM kill. Fixing that
+     *  properly means persisting the state, which means it needs an owner that outlives the
+     *  service; that is the shared core, not a field here.
+     */
     private var isGhost: Boolean = false
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -63,6 +78,15 @@ class RadarForegroundService : LifecycleService() {
                 return START_NOT_STICKY
             }
 
+            ACTION_START -> {
+                isGhost = intent.getBooleanExtra(EXTRA_GHOST, false)
+                startInForeground()
+            }
+
+            // Null action, or an action we do not recognise. The common case is the system
+            // restarting us under START_STICKY with a null intent, where deliberately NOT touching
+            // isGhost is the point: the redelivered intent carries no ghost state and overwriting
+            // with a default would flip a ghost user's notification to the wrong copy.
             else -> startInForeground()
         }
 
@@ -128,13 +152,20 @@ class RadarForegroundService : LifecycleService() {
         const val ACTION_START: String = "com.radius.android.radar.START"
         const val ACTION_STOP: String = "com.radius.android.radar.STOP"
 
+        private const val EXTRA_GHOST = "com.radius.android.radar.EXTRA_GHOST"
+
         /**
          * Callers must already hold the BLE runtime permissions. This does not request them, and
          * on API 31+ starting without them throws inside the service.
+         *
+         * [isGhost] is required, not defaulted: the notification is a safety surface and getting it
+         * wrong tells a user they are invisible when they are not, or the reverse. A caller that has
+         * to type the answer cannot forget to.
          */
-        fun start(context: Context) {
+        fun start(context: Context, isGhost: Boolean) {
             val intent = Intent(context, RadarForegroundService::class.java)
                 .setAction(ACTION_START)
+                .putExtra(EXTRA_GHOST, isGhost)
             context.startForegroundService(intent)
         }
 

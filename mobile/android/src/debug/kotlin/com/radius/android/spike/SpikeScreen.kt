@@ -57,27 +57,27 @@ internal fun SpikeScreen(
         modifier = Modifier
             .fillMaxSize()
             .verticalScroll(rememberScrollState())
-            .padding(spacing.md),
-        verticalArrangement = Arrangement.spacedBy(spacing.sm),
+            .padding(spacing.space16),
+        verticalArrangement = Arrangement.spacedBy(spacing.space8),
     ) {
         Text(
             text = "RADIUS SPIKE — Phase 0 instrument",
-            color = colors.ink,
+            color = colors.content.primary,
         )
         Text(
             text = "Debug build. Records raw RSSI and peer addresses to local storage. " +
                 "Nothing leaves this device: the app declares no INTERNET permission.",
-            color = colors.inkMuted,
+            color = colors.content.secondary,
         )
 
-        HorizontalDivider(color = colors.outline)
+        HorizontalDivider(color = colors.border.hairline)
 
         if (!permissionsGranted) {
             Text("Bluetooth permissions not granted. A scan without them returns NOTHING, silently.")
             Button(onClick = onRequestPermissions, modifier = Modifier.fillMaxWidth()) {
                 Text("Grant Bluetooth permissions")
             }
-            HorizontalDivider(color = colors.outline)
+            HorizontalDivider(color = colors.border.hairline)
         }
 
         // ------------------------------------------------------------------ mode + procedure
@@ -85,7 +85,7 @@ internal fun SpikeScreen(
         // produces a plausible-looking file under the wrong mode, so choosing the mode is the first
         // decision of a run and therefore the first control on the screen. The instrument then
         // states, in words, what the current combination can and cannot claim.
-        Text("MODE — what this run is FOR", color = colors.ink)
+        Text("MODE — what this run is FOR", color = colors.content.primary)
         StepperRow(
             label = "Mode",
             value = config.mode.label,
@@ -93,17 +93,17 @@ internal fun SpikeScreen(
             onDown = { onConfigChange(config.copy(mode = config.mode.previous())) },
             onUp = { onConfigChange(config.copy(mode = config.mode.next())) },
         )
-        Text(SpikeProcedure.headline(config.mode, config.maxCapture), color = colors.accentRadar)
+        Text(SpikeProcedure.headline(config.mode, config.maxCapture), color = colors.accent.radar.default)
 
         // The procedure lives on the phone because the person running this is in a car park with no
         // laptop. A runbook in a repository is a runbook they do not have.
-        Text("WHAT TO DO", color = colors.ink)
-        SpikeProcedure.steps(config.mode).forEach { step -> Text(step, color = colors.inkMuted) }
+        Text("WHAT TO DO", color = colors.content.primary)
+        SpikeProcedure.steps(config.mode).forEach { step -> Text(step, color = colors.content.secondary) }
 
-        HorizontalDivider(color = colors.outline)
+        HorizontalDivider(color = colors.border.hairline)
 
         // ------------------------------------------------------------------ configuration
-        Text("CONFIG (changing any of these restarts into a new file)", color = colors.ink)
+        Text("CONFIG (changing any of these restarts into a new file)", color = colors.content.primary)
 
         StepperRow(
             label = "This device's slot",
@@ -119,7 +119,7 @@ internal fun SpikeScreen(
         Text(
             "Every handset in a session needs a DIFFERENT slot. Two on one slot is the " +
                 "decision-35 twin case and fills the log with E_SELF_EID.",
-            color = colors.inkMuted,
+            color = colors.content.secondary,
         )
 
         ToggleRow(
@@ -174,14 +174,14 @@ internal fun SpikeScreen(
         Text(
             "Clamped to the seven legal values (SPEC §3.2). UNMEASURED for every real handset — " +
                 "calibration/ is a placeholder and filling it is a spike deliverable.",
-            color = colors.inkMuted,
+            color = colors.content.secondary,
         )
 
-        HorizontalDivider(color = colors.outline)
+        HorizontalDivider(color = colors.border.hairline)
 
         Row(
             modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(spacing.sm),
+            horizontalArrangement = Arrangement.spacedBy(spacing.space8),
         ) {
             Button(
                 onClick = if (stats.running) onStop else onStart,
@@ -195,7 +195,7 @@ internal fun SpikeScreen(
             }
         }
 
-        HorizontalDivider(color = colors.outline)
+        HorizontalDivider(color = colors.border.hairline)
 
         // THE RUN REFUSED TO START. Above everything else, in danger, with the reason spelled out:
         // the previous behaviour was an exception escaping through the foreground service, which
@@ -203,33 +203,33 @@ internal fun SpikeScreen(
         // A person in a car park needs to be told the file could not be opened, not left watching
         // a counter that will never move.
         if (stats.startFailure.isNotEmpty()) {
-            Text("RUN REFUSED — NOTHING IS BEING RECORDED", color = colors.danger)
+            Text("RUN REFUSED — NOTHING IS BEING RECORDED", color = colors.status.danger)
             Text(
                 text = stats.startFailure,
-                color = colors.danger,
+                color = colors.status.danger,
                 modifier = Modifier.semantics { contentDescription = stats.startFailure },
             )
-            HorizontalDivider(color = colors.outline)
+            HorizontalDivider(color = colors.border.hairline)
         }
 
         // ------------------------------------------------------------------ integrity first
-        Text("CAPTURE INTEGRITY", color = colors.ink)
+        Text("CAPTURE INTEGRITY", color = colors.content.primary)
         Text(
             text = stats.integrityNote,
             color = if (stats.bridgedAddresses > 0 || stats.bridgedEids > 0 ||
                 stats.diagnosticsDropped > 0 || stats.writeFailures > 0
             ) {
-                colors.danger
+                colors.status.danger
             } else {
-                colors.inkMuted
+                colors.content.secondary
             },
             modifier = Modifier.semantics { contentDescription = stats.integrityNote },
         )
 
-        HorizontalDivider(color = colors.outline)
+        HorizontalDivider(color = colors.border.hairline)
 
         // ------------------------------------------------------------------ P2 discovery latency
-        Text("P2 — DISCOVERY LATENCY (target p50 <= 5s)", color = colors.ink)
+        Text("P2 — DISCOVERY LATENCY (target p50 <= 5s)", color = colors.content.primary)
         Stat("Samples", stats.latencySamples.toString())
         Stat("p50", stats.latencyP50Ms.msOrDash())
         Stat("p95", stats.latencyP95Ms.msOrDash())
@@ -249,7 +249,7 @@ internal fun SpikeScreen(
             if (stats.networkTimeAvailable) "AVAILABLE" else "NONE",
         )
         if (stats.networkTimeSource.isNotEmpty()) {
-            Text(stats.networkTimeSource, color = colors.inkMuted)
+            Text(stats.networkTimeSource, color = colors.content.secondary)
         }
         Text(
             text = stats.latencyNote,
@@ -259,17 +259,17 @@ internal fun SpikeScreen(
             color = if ((stats.latencyMinMs ?: 0L) < 0L ||
                 (stats.mode == SpikeMode.LATENCY_PROBE && !stats.networkTimeAvailable)
             ) {
-                colors.danger
+                colors.status.danger
             } else {
-                colors.inkMuted
+                colors.content.secondary
             },
             modifier = Modifier.semantics { contentDescription = stats.latencyNote },
         )
 
-        HorizontalDivider(color = colors.outline)
+        HorizontalDivider(color = colors.border.hairline)
 
         // ------------------------------------------------------------------ P1 battery
-        Text("P1 — BATTERY (target <4%/hr scanning, <1%/day idle)", color = colors.ink)
+        Text("P1 — BATTERY (target <4%/hr scanning, <1%/day idle)", color = colors.content.primary)
         Stat("Samples", stats.batterySamples.toString())
         Stat("Level now", if (stats.batteryLevelPct < 0) "-" else "${stats.batteryLevelPct}%")
         Stat("Level change this run", "${stats.batteryLevelDeltaPct}%")
@@ -283,11 +283,11 @@ internal fun SpikeScreen(
         Stat("Doze / power save", "${stats.batteryDeviceIdle} / ${stats.batteryPowerSave}")
         Text(
             text = stats.batteryNote,
-            color = if (stats.batteryInvalidReason.isNotEmpty()) colors.danger else colors.inkMuted,
+            color = if (stats.batteryInvalidReason.isNotEmpty()) colors.status.danger else colors.content.secondary,
             modifier = Modifier.semantics { contentDescription = stats.batteryNote },
         )
 
-        Text("RADIO TIME — what makes the number above attributable", color = colors.ink)
+        Text("RADIO TIME — what makes the number above attributable", color = colors.content.primary)
         Stat("Scan open", "${stats.scanOnMs / 1000}s (${stats.scanOnPct}% of run)")
         Stat("Advertising live", "${stats.advertiseOnMs / 1000}s")
         Stat("Scan open transitions", stats.scanOpenTransitions.toString())
@@ -299,13 +299,13 @@ internal fun SpikeScreen(
                 "this x the nominal duty — and several OEMs override that nominal. A battery " +
                 "figure with a low scan-open percentage is a figure for a phone that was not " +
                 "scanning.",
-            color = colors.inkMuted,
+            color = colors.content.secondary,
         )
 
-        HorizontalDivider(color = colors.outline)
+        HorizontalDivider(color = colors.border.hairline)
 
         // ------------------------------------------------------------------ SPEC 5.0 density
-        Text("SPEC 5.0 — ACQUISITION RATE AND PEER DENSITY", color = colors.ink)
+        Text("SPEC 5.0 — ACQUISITION RATE AND PEER DENSITY", color = colors.content.primary)
         Stat("Buckets written", stats.densityBuckets.toString())
         Stat("Distinct peers this run", stats.distinctPeersTotal.toString())
         Stat("Concurrent peers now", stats.concurrentPeers.toString())
@@ -316,13 +316,13 @@ internal fun SpikeScreen(
                 "recency is. density_peers.csv carries per-peer first/last timestamps so any other " +
                 "window can be re-derived. Buckets with zero packets ARE written; a success rate " +
                 "computed only over buckets where something succeeded is 100% by construction.",
-            color = colors.inkMuted,
+            color = colors.content.secondary,
         )
 
-        HorizontalDivider(color = colors.outline)
+        HorizontalDivider(color = colors.border.hairline)
 
         // ------------------------------------------------------------------ B8 counters
-        Text("B8 — RPA CO-ROTATION SCREEN", color = colors.ink)
+        Text("B8 — RPA CO-ROTATION SCREEN", color = colors.content.primary)
         Stat("Unique advertiser addresses", stats.uniqueAdvertiserAddresses.toString())
         Stat("Unique ephemeral ids", stats.uniqueEphemeralIds.toString())
         Stat("Addresses seen with >1 eid", stats.bridgedAddresses.toString())
@@ -333,7 +333,7 @@ internal fun SpikeScreen(
                     "per cycle, which rotates this device's advertising address INSIDE a protocol " +
                     "epoch. Any bridging seen here is self-inflicted by the instrument. Test §4.3.1 " +
                     "in CAPTURE mode.",
-                color = colors.danger,
+                color = colors.status.danger,
             )
         }
         Text(
@@ -341,13 +341,13 @@ internal fun SpikeScreen(
                 "A zero value is NOT evidence of success — a phone's scanner hops channels and " +
                 "misses packets, so this is a screen, not the §5.3 measurement. That needs three " +
                 "sniffer dongles and it cannot see the address type reliably either.",
-            color = colors.inkMuted,
+            color = colors.content.secondary,
         )
 
-        HorizontalDivider(color = colors.outline)
+        HorizontalDivider(color = colors.border.hairline)
 
         // ------------------------------------------------------------------ run counters
-        Text("RUN", color = colors.ink)
+        Text("RUN", color = colors.content.primary)
         Stat("Running", stats.running.toString())
         Stat("Run id", stats.runId)
         Stat("Elapsed", "${stats.elapsedMillis / 1000}s")
@@ -362,38 +362,38 @@ internal fun SpikeScreen(
         Stat("Radio LIFECYCLE events lost (corrupts scan_on_ms)", stats.radioEventsDropped.toString())
         Stat("File write failures", stats.writeFailures.toString())
 
-        Text("Resolved peers by slot", color = colors.ink)
+        Text("Resolved peers by slot", color = colors.content.primary)
         if (stats.resolvedBySlot.isEmpty()) {
-            Text("none yet", color = colors.inkMuted)
+            Text("none yet", color = colors.content.secondary)
         } else {
             stats.resolvedBySlot.toSortedMap().forEach { (slot, n) -> Stat("slot $slot", n.toString()) }
         }
 
-        Text("Bands", color = colors.ink)
+        Text("Bands", color = colors.content.primary)
         if (stats.bandCounts.isEmpty()) {
-            Text("none yet", color = colors.inkMuted)
+            Text("none yet", color = colors.content.secondary)
         } else {
             stats.bandCounts.forEach { (band, n) -> Stat(band, n.toString()) }
         }
 
-        Text("Decode errors", color = colors.ink)
+        Text("Decode errors", color = colors.content.primary)
         if (stats.decodeErrors.isEmpty()) {
-            Text("none", color = colors.inkMuted)
+            Text("none", color = colors.content.secondary)
         } else {
             stats.decodeErrors.forEach { (code, n) -> Stat(code, n.toString()) }
         }
 
-        Text("Address type bits (HINT ONLY — TxAdd is not visible to Android)", color = colors.ink)
+        Text("Address type bits (HINT ONLY — TxAdd is not visible to Android)", color = colors.content.primary)
         if (stats.addressTypeCounts.isEmpty()) {
-            Text("none yet", color = colors.inkMuted)
+            Text("none yet", color = colors.content.secondary)
         } else {
             stats.addressTypeCounts.forEach { (t, n) -> Stat(t, n.toString()) }
         }
 
-        HorizontalDivider(color = colors.outline)
+        HorizontalDivider(color = colors.border.hairline)
 
         // ------------------------------------------------------------------ radio
-        Text("RADIO", color = colors.ink)
+        Text("RADIO", color = colors.content.primary)
         Stat("Availability", stats.radioAvailability)
         Stat("Advertise role", stats.advertiseRole)
         Stat("Advertise status", "${stats.advertiseStatus} ${stats.advertiseDetail}")
@@ -410,16 +410,16 @@ internal fun SpikeScreen(
                 "THIS HANDSET REPORTS NO PERIPHERAL ROLE. It can see others and cannot be seen. " +
                     "That is a product finding (KEY_SCHEDULE §4.3.6): a user is entitled to be " +
                     "told, in plain language, rather than left wondering why nobody waves.",
-                color = colors.danger,
+                color = colors.status.danger,
             )
         }
 
-        HorizontalDivider(color = colors.outline)
+        HorizontalDivider(color = colors.border.hairline)
 
         // ------------------------------------------------------------------ export
-        Text("EXPORT — adb only, no other egress exists", color = colors.ink)
-        Text(stats.directory, color = colors.inkMuted)
-        Text(stats.adbCommand, color = colors.accentRadar)
+        Text("EXPORT — adb only, no other egress exists", color = colors.content.primary)
+        Text(stats.directory, color = colors.content.secondary)
+        Text(stats.adbCommand, color = colors.accent.radar.default)
         Text(
             "events.jsonl is the record (every sighting AND every radio lifecycle event, in " +
                 "arrival order, contiguous sequence numbers). sightings.csv is the same rows " +
@@ -427,24 +427,24 @@ internal fun SpikeScreen(
                 "P2, uncorrected. density.csv and density_peers.csv are SPEC 5.0. meta.json is " +
                 "device, OS build fingerprint, config, both clock references and the honesty " +
                 "flags. Nothing is deduplicated, smoothed or sampled.",
-            color = colors.inkMuted,
+            color = colors.content.secondary,
             textAlign = TextAlign.Start,
         )
 
-        HorizontalDivider(color = colors.outline)
+        HorizontalDivider(color = colors.border.hairline)
 
         // ------------------------------------------------------------------ the trust table
         // LAST, so it is what a person sees after scrolling past a screenful of numbers, which is
         // the moment they are most likely to quote one. Every measurement, and whether it can be
         // read on its own.
-        Text("BEFORE YOU QUOTE ANY NUMBER ABOVE", color = colors.ink)
+        Text("BEFORE YOU QUOTE ANY NUMBER ABOVE", color = colors.content.primary)
         SpikeProcedure.MEASUREMENTS.forEach { m ->
             val line = "${m.name} — ${m.trust.label}. Answers: ${m.answers}. ${m.caveat}"
             Text(
                 text = line,
                 color = when (m.trust) {
-                    SpikeProcedure.Trust.STANDS_ALONE -> colors.inkMuted
-                    else -> colors.danger
+                    SpikeProcedure.Trust.STANDS_ALONE -> colors.content.secondary
+                    else -> colors.status.danger
                 },
                 modifier = Modifier.semantics { contentDescription = line },
             )
@@ -475,8 +475,8 @@ private fun Stat(label: String, value: String) {
             .semantics { contentDescription = "$label: $value" },
         horizontalArrangement = Arrangement.SpaceBetween,
     ) {
-        Text(label, color = RadiusTheme.colors.inkMuted, modifier = Modifier.weight(1f))
-        Text(value, color = RadiusTheme.colors.ink)
+        Text(label, color = RadiusTheme.colors.content.secondary, modifier = Modifier.weight(1f))
+        Text(value, color = RadiusTheme.colors.content.primary)
     }
 }
 
@@ -493,10 +493,10 @@ private fun ToggleRow(
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Text(label, color = RadiusTheme.colors.ink, modifier = Modifier.weight(1f))
+        Text(label, color = RadiusTheme.colors.content.primary, modifier = Modifier.weight(1f))
         Switch(checked = checked, onCheckedChange = onChange, enabled = enabled)
     }
-    Text(description, color = RadiusTheme.colors.inkMuted)
+    Text(description, color = RadiusTheme.colors.content.secondary)
 }
 
 @Composable
@@ -512,13 +512,13 @@ private fun StepperRow(
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Text(label, color = RadiusTheme.colors.ink, modifier = Modifier.weight(1f))
+        Text(label, color = RadiusTheme.colors.content.primary, modifier = Modifier.weight(1f))
         OutlinedButton(onClick = onDown, enabled = enabled) { Text("-") }
         Text(
             text = value,
-            color = RadiusTheme.colors.ink,
+            color = RadiusTheme.colors.content.primary,
             modifier = Modifier
-                .padding(horizontal = RadiusTheme.spacing.sm)
+                .padding(horizontal = RadiusTheme.spacing.space8)
                 .semantics { contentDescription = "$label: $value" },
         )
         OutlinedButton(onClick = onUp, enabled = enabled) { Text("+") }

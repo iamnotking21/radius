@@ -201,3 +201,42 @@ DEFERRED: all iOS · Mac · Carrier B validation · B7 · relay-only calling (G5
   wake a Dozing SoC. Promote it to setExactAndAllowWhileIdle and 96 exact alarms/day land on a
   CI-gated battery contract — noted at both call sites. Decision 78: when ring persistence lands the
   guarantee moves to prune-on-load in the ring store, because the radio's lifetime is not the ring's.
+2026-08-05 android-kotlin · design tokens wired. RadiusTheme.kt placeholders gone; the whole
+  mobile/android/ tree now has zero raw hex and zero magic dp/sp. Four things worth carrying:
+  (a) I did NOT vendor design-system's generated RadiusDesignTokens.kt. :android runs
+  generate.mjs at build time (task generateDesignTokens, hangs off preBuild) and emits into
+  build/generated/, which is gitignored. Vendoring would have put 30 hex literals in my source
+  tree that drift the first time nobody re-copies. Consequence, stated so nobody is surprised:
+  :android now needs `node` on PATH. run-stage.sh already requires node for battery/conformance
+  but NOT for android_lint / android_assemble_* — HANDOFF to devops-tencent. Free upside: the
+  48-pairing WCAG contrast gate now fails :android:assembleDebug, so a contrast regression can no
+  longer be merged by someone who did not run the generator.
+  (b) THE GENERATED FILE DOES NOT COMPILE AS EMITTED — three separate bugs, all in generate.mjs,
+  all one-liners: `import Color` is an unresolvable root-package import; the nested `object Color`
+  shadows Compose's Color so all 30 `val x: Color = Color(0x..)` are type mismatches; and
+  Accent.Radar's KDoc contains the prose "signal/*", which opens a NESTED block comment (Kotlin
+  nests, Java does not) and swallows the last 100 lines of the file. That third one reports as
+  "Missing '}'" plus "Unclosed comment at EOF" and points nowhere near the cause. Three asserting
+  rewrites in build.gradle.kts work around them; each fails loudly if its match count drops, so
+  the day design-system fixes the generator the build tells us to delete the shim.
+  (c) The outline split was a real a11y defect, not a rename. One `outline` token fed both the
+  divider and OutlinedButton's stroke. M3 draws every focus ring, OutlinedTextField edge and
+  outlined-button border from colorScheme.outline, so a hairline-weight value there put the ONLY
+  visible affordance of every such control at ~1.1-1.5:1, under SC 1.4.11's 3:1 floor. Fixed at
+  the SCHEME level (outline = border.interactive, outlineVariant = border.hairline) rather than at
+  the call site, so the next OutlinedTextField anyone adds is compliant by default instead of by
+  memory. Deliberately did not hand-roll a BorderStroke: no stroke-WIDTH token exists to build one
+  from, and an explicit border would defeat M3's enabled/disabled stroke handling on a button that
+  currently ships disabled.
+  (d) Spacing scale REPLACED, not aliased. Old xs/sm/md/lg/xl (4/8/16/24/32) was invented locally
+  and missing 2/6/12/20/40/64/80. Mapping md->space16 would have preserved a second unreviewed
+  scale behind a friendly name, which is the exact failure the token drop existed to end.
+  Type scale wired with the real metrics; FONTS ARE NOT — Fraunces/Inter files are not bundled and
+  bundling vs Downloadable Fonts is an ORCHESTRATION §8 call, so display maps to the platform serif
+  and ui to the platform sans as an explicitly unbranded fallback. Do not read a screenshot as
+  "type is done". Also took two review one-liners in RadarForegroundService: isGhost was declared
+  and never assigned (so a ghost-mode user read "Discovering people nearby" in the shade — a
+  safety-surface lie, invariant 10) and ACTION_START was declared but never matched. isGhost now
+  arrives on the intent and start() requires it. 52 unit tests green, lintDebug clean,
+  assembleDebug green. STILL NO DEVICE: none of this has been seen on hardware, and the a11y claim
+  here is arithmetic on token values, not a TalkBack or 200%-font-scale pass on a real handset.
