@@ -15,15 +15,18 @@ import kotlin.math.pow
 /**
  * Guards the WIRING, not the values.
  *
- * `mobile/design-tokens/scripts/generate.mjs` already re-derives all 48 WCAG pairings on every
+ * `mobile/design-tokens/scripts/generate.mjs` already re-derives all 51 WCAG pairings on every
  * build and fails on a regression, so nothing here needs to re-check that `border.interactive` is
  * a good colour. What generate.mjs CANNOT see is the other half of the bug it found: whether the
  * Android side points the right ROLE at the right widget. A token file can be perfect while
  * `OutlinedButton` still draws its only visible edge with a 1.14:1 hairline — that was the actual
  * defect, and it lived entirely on this side of the boundary.
  *
- * So these tests assert role assignment, plus one contrast floor on the specific role whose whole
- * reason for existing is that floor.
+ * So these tests assert role assignment — including at the M3 SLOT level, via
+ * [radiusMaterialColorScheme], since every slot-mapping defect found so far (`outline`,
+ * `inversePrimary`, `surfaceDim`/`surfaceBright`) was invisible to both the generator and a
+ * screenshot — plus contrast floors on the specific roles whose whole reason for existing is a
+ * floor.
  */
 class RadiusThemeTokenWiringTest {
 
@@ -76,6 +79,159 @@ class RadiusThemeTokenWiringTest {
         )
     }
 
+    // -- the inversePrimary tripwire ---------------------------------------------------------
+
+    /**
+     * `inversePrimary` is the Snackbar ACTION LABEL, drawn on `inverseSurface` — which we map, so an
+     * unmapped value here was baseline M3 purple on our own inverted surface. It is now the
+     * `accent.radar.onInverse` ROLE, and this asserts the slot reads that role.
+     *
+     * HOW MUCH THIS CATCHES, STATED HONESTLY, BECAUSE IT IS LESS THAN IT LOOKS: `onInverse` and
+     * `wash` are the same primitive today (`signal/600`), so a revert to `colors.accent.radar.wash`
+     * would still pass this assertion — [onInverse and wash are the same value today, deliberately]
+     * documents exactly that. What this DOES catch is the whole class of "point it at something
+     * plausible": `accent.radar.default` (1.84:1, the obvious wrong answer), a neutral, or a
+     * baseline M3 value. And the moment design-system moves either role independently — which is the
+     * entire reason the two exist separately — it starts catching the wash revert too.
+     */
+    @Test
+    fun `inversePrimary is the onInverse role, not the accent and not a baseline default`() {
+        val colors = RadiusColors.dark
+        val scheme = radiusMaterialColorScheme(colors)
+
+        assertEquals(
+            "inversePrimary must be accent.radar.onInverse — the role designed and gated for a " +
+                "foreground on an inverted surface. It is NOT accent.radar.wash (a background " +
+                "role that happens to share the primitive today) and NOT accent.radar.default.",
+            RadiusDesignTokens.Color.Accent.Radar.onInverse,
+            scheme.inversePrimary,
+        )
+        assertNotEquals(
+            "inversePrimary must never be accent.radar.default — signal/400 measures 1.84:1 on " +
+                "inverseSurface, i.e. an invisible Snackbar action label.",
+            colors.accent.radar.default,
+            scheme.inversePrimary,
+        )
+    }
+
+    /**
+     * The teeth the assertion above cannot have while the two primitives coincide. This one is
+     * value-based and independent: whatever `inversePrimary` is pointed at, it must be readable on
+     * `inverseSurface`. Computed here with this file's own WCAG implementation, so it holds even if
+     * someone bypasses the token layer entirely and drops a literal into the slot.
+     */
+    @Test
+    fun `inversePrimary clears AA text contrast against inverseSurface`() {
+        val scheme = radiusMaterialColorScheme(RadiusColors.dark)
+        val ratio = contrastRatio(scheme.inversePrimary, scheme.inverseSurface)
+
+        assertTrue(
+            "inversePrimary on inverseSurface is " +
+                String.format(Locale.ROOT, "%.2f", ratio) + ":1, under AA (4.5). That slot is the " +
+                "Snackbar action label — the first thing a user taps after an error.",
+            ratio >= 4.5,
+        )
+    }
+
+    /**
+     * Records the coincidence rather than relying on it. `wash` (a background role, measured against
+     * our dark surfaces) and `onInverse` (a foreground role, measured against near-white) select the
+     * same primitive in all three ramps today, purely because every ramp darkens toward its high
+     * stops.
+     *
+     * WHEN THIS FAILS, IT IS PROBABLY CORRECT AND YOU SHOULD DELETE IT. A failure means design-system
+     * moved one role without the other — which is allowed, expected, and the reason they are separate
+     * tokens. Do NOT "fix" it by re-aliasing one to the other. What it buys in the meantime is that
+     * nobody reads the equal values and concludes the two roles are interchangeable.
+     */
+    @Test
+    fun `onInverse and wash are the same value today, deliberately`() {
+        val accents = RadiusColors.dark.accent
+        val note = "onInverse and wash have diverged. That is a legitimate design-system change, " +
+            "not a regression — delete this test, and note that the inversePrimary role assertion " +
+            "just gained real teeth. Do not re-alias the roles to make this pass."
+
+        assertEquals(note, accents.discover.wash, accents.discover.onInverse)
+        assertEquals(note, accents.radar.wash, accents.radar.onInverse)
+        assertEquals(note, accents.like.wash, accents.like.onInverse)
+    }
+
+    // -- the tonal-elevation slots (surfaceDim / surfaceBright) -------------------------------
+
+    /**
+     * M3 pairs both of these with `onSurface`, which IS mapped (`content.primary`). Left at M3
+     * baseline they are the "mapped foreground on an unmapped background" trap — the foreground half
+     * passes its own gate, so nothing fires. They are mapped to the two ends of our own ladder so
+     * they inherit pairings generate.mjs already checks (18.36:1 and 14.12:1).
+     *
+     * Asserting the mapping rather than the ratio is the point: the ratio is the generator's job, and
+     * the only way to get it wrong here is to point the slot somewhere unverified.
+     */
+    @Test
+    fun `tonal elevation slots resolve to verified surfaces, not M3 baseline`() {
+        val colors = RadiusColors.dark
+        val scheme = radiusMaterialColorScheme(colors)
+
+        assertEquals(
+            "surfaceDim must be one of OUR surfaces. At M3 baseline it is an off-brand tone that " +
+                "content.primary (mapped to onSurface) would land on unwatched.",
+            colors.surface.canvas,
+            scheme.surfaceDim,
+        )
+        assertEquals(
+            "surfaceBright must be one of OUR surfaces, same reason as surfaceDim.",
+            colors.surface.modal,
+            scheme.surfaceBright,
+        )
+
+        // Both must be pairings the generator actually checks. sunken is ours too, but
+        // content.primary-on-sunken is not among the 51 — mapping to it would trade an unwatched
+        // background for an unwatched pairing.
+        listOf("surfaceDim" to scheme.surfaceDim, "surfaceBright" to scheme.surfaceBright)
+            .forEach { (name, value) ->
+                assertTrue(
+                    "$name must resolve to a surface whose pairing with content.primary is in " +
+                        "generate.mjs's checks (canvas/base/raised/overlay/modal).",
+                    value in listOf(
+                        colors.surface.canvas,
+                        colors.surface.base,
+                        colors.surface.raised,
+                        colors.surface.overlay,
+                        colors.surface.modal,
+                    ),
+                )
+            }
+    }
+
+    /**
+     * The `outline` split, asserted at the SLOT rather than at the token. The original defect was not
+     * a bad colour, it was a good colour in the wrong slot — `RadiusColors.border.interactive` was
+     * always correct; `outline` just wasn't reading it.
+     */
+    @Test
+    fun `outline slots keep the interactive and decorative split`() {
+        val colors = RadiusColors.dark
+        val scheme = radiusMaterialColorScheme(colors)
+
+        assertEquals(
+            "outline draws OutlinedButton strokes, focus rings and text-field edges — the sole " +
+                "visible affordance of a control. It must be border.interactive (SC 1.4.11).",
+            colors.border.interactive,
+            scheme.outline,
+        )
+        assertEquals(
+            "outlineVariant is for decorative dividers, which are allowed to be quiet.",
+            colors.border.hairline,
+            scheme.outlineVariant,
+        )
+        assertEquals(
+            "surfaceTint must stay transparent — elevation is surface lightening here, and M3's " +
+                "tonal tint would double-apply it and drift our measured ratios.",
+            Color.Transparent,
+            scheme.surfaceTint,
+        )
+    }
+
     // -- role mapping ------------------------------------------------------------------------
 
     @Test
@@ -105,6 +261,11 @@ class RadiusThemeTokenWiringTest {
         assertEquals(RadiusDesignTokens.Color.Accent.Discover.default, colors.accent.discover.default)
         assertEquals(RadiusDesignTokens.Color.Accent.Like.default, colors.accent.like.default)
         assertEquals(RadiusDesignTokens.Color.Accent.Threads.default, colors.accent.threads)
+
+        assertEquals(RadiusDesignTokens.Color.Accent.Radar.wash, colors.accent.radar.wash)
+        assertEquals(RadiusDesignTokens.Color.Accent.Radar.onInverse, colors.accent.radar.onInverse)
+        assertEquals(RadiusDesignTokens.Color.Accent.Discover.onInverse, colors.accent.discover.onInverse)
+        assertEquals(RadiusDesignTokens.Color.Accent.Like.onInverse, colors.accent.like.onInverse)
 
         assertEquals(RadiusDesignTokens.Color.Status.Success.default, colors.status.success)
         assertEquals(RadiusDesignTokens.Color.Status.Warning.default, colors.status.warning)

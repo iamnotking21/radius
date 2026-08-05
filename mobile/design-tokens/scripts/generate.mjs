@@ -215,6 +215,16 @@ const CHECKS = [
   ["content.onWash on accent.discover.wash", "content.onWash", "accent.discover.wash", 4.5, "AA text on wash surface"],
   ["content.onWash on accent.radar.wash", "content.onWash", "accent.radar.wash", 4.5, "AA text on wash surface"],
   ["content.onWash on accent.like.wash", "content.onWash", "accent.like.wash", 4.5, "AA text on wash surface"],
+
+  // M3's inverseSurface slot is mapped (RadiusTheme.kt: inverseSurface = colors.content.primary,
+  // i.e. ink/50 -- the same value checked as the bg below). Any accent-coloured FOREGROUND meant to
+  // sit on that surface (e.g. a Snackbar action label) needs its own verified pairing -- see
+  // accent.*.onInverse in tokens.json for the full story (found by android-kotlin hand-verifying
+  // inversePrimary, then generalised here so the gate watches it instead of a comment). threads has
+  // no onInverse -- see tokens.json's $onInverseRefused note -- and is intentionally absent below.
+  ["accent.discover.onInverse on content.primary (M3 inverseSurface)", "accent.discover.onInverse", "content.primary", 4.5, "AA text on M3 inverseSurface"],
+  ["accent.radar.onInverse on content.primary (M3 inverseSurface)", "accent.radar.onInverse", "content.primary", 4.5, "AA text on M3 inverseSurface"],
+  ["accent.like.onInverse on content.primary (M3 inverseSurface)", "accent.like.onInverse", "content.primary", 4.5, "AA text on M3 inverseSurface"],
 ];
 
 let failures = 0;
@@ -448,6 +458,8 @@ push("            public object Discover {");
 push(`                public val default: ComposeColor = ${toKotlinColor(get("accent.discover.default"), "accent.discover.default")}`);
 push(`                public val pressed: ComposeColor = ${toKotlinColor(get("accent.discover.pressed"), "accent.discover.pressed")}`);
 push(`                public val wash: ComposeColor = ${toKotlinColor(get("accent.discover.wash"), "accent.discover.wash")}`);
+push(...kdocLines("                ", "Accent-coloured foreground for M3 inverseSurface (Snackbar action label etc). Verified 7.02:1. Same primitive as wash today, but a DIFFERENT role -- do not assume it moves with wash."));
+push(`                public val onInverse: ComposeColor = ${toKotlinColor(get("accent.discover.onInverse"), "accent.discover.onInverse")}`);
 push("            }");
 push(
   ...kdocLines(
@@ -462,6 +474,8 @@ push("            public object Radar {");
 push(`                public val default: ComposeColor = ${toKotlinColor(get("accent.radar.default"), "accent.radar.default")}`);
 push(`                public val pressed: ComposeColor = ${toKotlinColor(get("accent.radar.pressed"), "accent.radar.pressed")}`);
 push(`                public val wash: ComposeColor = ${toKotlinColor(get("accent.radar.wash"), "accent.radar.wash")}`);
+push(...kdocLines("                ", "Accent-coloured foreground for M3 inverseSurface (Snackbar action label etc). Verified 5.20:1 -- this is the value RadiusTheme.kt's inversePrimary was hand-wired to before this role existed; wire it to THIS instead. Same primitive as wash today, but a DIFFERENT role -- do not assume it moves with wash."));
+push(`                public val onInverse: ComposeColor = ${toKotlinColor(get("accent.radar.onInverse"), "accent.radar.onInverse")}`);
 push("            }");
 push(
   ...kdocLines(
@@ -477,8 +491,23 @@ push("            public object Like {");
 push(`                public val default: ComposeColor = ${toKotlinColor(get("accent.like.default"), "accent.like.default")}`);
 push(`                public val pressed: ComposeColor = ${toKotlinColor(get("accent.like.pressed"), "accent.like.pressed")}`);
 push(`                public val wash: ComposeColor = ${toKotlinColor(get("accent.like.wash"), "accent.like.wash")}`);
+push(...kdocLines("                ", "Accent-coloured foreground for M3 inverseSurface (Snackbar action label etc). Verified 6.04:1. Same primitive as wash today, but a DIFFERENT role -- do not assume it moves with wash."));
+push(`                public val onInverse: ComposeColor = ${toKotlinColor(get("accent.like.onInverse"), "accent.like.onInverse")}`);
 push("            }");
-push(...kdocLines("            ", "THREADS: one inbox, favours neither origin. Deliberately neutral, not a hue."));
+push(
+  ...kdocLines(
+    "            ",
+    [
+      "THREADS: one inbox, favours neither origin. Deliberately neutral, not a hue.",
+      "",
+      "NO onInverse HERE, ON PURPOSE. threads.default is a single borrowed ink-neutral",
+      "stop, not the top of a dedicated ramp -- there is no 'threads' hue to pick a",
+      "foreground-on-inverseSurface stop FROM. Picking some other ink stop dark enough",
+      "to clear AA would just be generic dark-neutral text wearing this role's name.",
+      "See tokens.json accent.threads.$onInverseRefused for the full reasoning.",
+    ].join("\n"),
+  ),
+);
 push("            public object Threads {");
 push(`                public val default: ComposeColor = ${toKotlinColor(get("accent.threads.default"), "accent.threads.default")}`);
 push("            }");

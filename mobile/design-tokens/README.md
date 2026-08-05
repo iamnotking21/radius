@@ -124,7 +124,9 @@ without introducing a fourth hue.
 
 All ratios below are from `node scripts/generate.mjs`'s own contrast pass (WCAG 2.1 relative
 luminance, sRGB), re-derived from `tokens.json` every run — not hand-computed once and pasted here
-to rot. 48 pairings are checked; the table below is that same run, unedited.
+to rot. 51 pairings are checked; the table below is that same run, unedited. (48 through the first
+android-kotlin wiring pass; +3 `accent.*.onInverse` pairings added after android-kotlin found the
+gap below them — see finding #5.)
 
 ### Your specific question: `ink/500 #55556a` on `ink/900 #101017`
 
@@ -137,7 +139,7 @@ exemption: disabled state must also be carried structurally (no elevation, no in
 be read as live information. This restriction is written directly into `tokens.json`'s
 `content.disabled` node and into the generated Kotlin KDoc, not just here.
 
-### Full pass/fail table (of the 48; failures/restrictions annotated)
+### Full pass/fail table (of the 51; failures/restrictions annotated)
 
 | Pairing | Ratio | Floor | Status |
 |---|---|---|---|
@@ -154,8 +156,9 @@ be read as live information. This restriction is written directly into `tokens.j
 | `status.success/warning/danger/info.default` on canvas | 5.33 – 9.42:1 | 4.5 | PASS all |
 | `content.onFill` on all 7 saturated fills (ember/signal/bloom/success/warning/danger/info) | 5.14 – 9.96:1 | 4.5 | PASS all — one token, safe everywhere |
 | `content.onWash` on all 3 accent washes | 5.20 – 7.02:1 | 4.5 | PASS all |
+| `accent.discover/radar/like.onInverse` on `content.primary` (M3 `inverseSurface`) | 5.20 – 7.02:1 | 4.5 | PASS all 3. No `threads.onInverse` — refused, see finding #5. |
 
-Run `node scripts/generate.mjs` for the live, unabridged 48-row table with exact figures.
+Run `node scripts/generate.mjs` for the live, unabridged 51-row table with exact figures.
 
 ### Findings from doing the math instead of eyeballing it
 
@@ -192,6 +195,60 @@ Run `node scripts/generate.mjs` for the live, unabridged 48-row table with exact
    scale in Figma's Foundations — it's an accessibility floor, not a spacing step — so it isn't in
    this file; keep it where it is in `RadiusTheme.kt`, it already satisfies "min touch target 44pt
    ALWAYS" (48dp > the 44pt/44dp Apple-HIG-derived floor).
+5. **`accent.*.onInverse` — a foreground role that was missing entirely, found by android-kotlin,
+   not by this generator.** M3's `inversePrimary` slot (a Snackbar action label, drawn on
+   `inverseSurface`, which is mapped to `content.primary`/`ink-50`) has no counterpart in the
+   original 48 checks — nothing in this file's role set was ever "an accent-coloured foreground on
+   a light inverted surface," because every other accent-as-text pairing here is against a *dark*
+   surface. android-kotlin hand-verified that `signal/400` (the obvious choice, `accent.radar.default`)
+   measures 1.84:1 there — invisible — and wired the Snackbar to `accent.radar.wash` (`signal/600`,
+   5.20:1) instead, because it was the one stop that worked. That value was right, but it was
+   *borrowed*: `wash` is designed as a background role (a tinted chip fill on a dark surface), used
+   here as a foreground on a light one, by coincidence of the primitive rather than by verified
+   design intent — and it wasn't gated, so a future edit to the wash tier for its actual purpose
+   could silently break a Snackbar nobody is watching.
+   `accent.discover.onInverse` / `accent.radar.onInverse` / `accent.like.onInverse` now exist as
+   their own named roles, each picked by measuring every stop in its ramp against `content.primary`
+   (`ink/50`) directly — not by aliasing to `wash`, so the two can diverge safely if either ever
+   needs to move independently:
+   - `ember/600` → 4.14:1 (large-text-only, fails AA body); `ember/700` → **7.02:1**, the pick.
+   - `signal/500` → 2.76:1 (fails outright); `signal/600` → **5.20:1**, the pick (matches
+     android-kotlin's hand-verified value, now gated).
+   - `bloom/500` → 3.88:1 (large-text-only, fails AA body); `bloom/600` → **6.04:1**, the pick.
+   All three land on the same primitive already used for that accent's `wash` — every ramp here
+   happens to get *darker* toward its high-numbered stops, and "dark enough to read as a subtle
+   wash near a dark canvas" and "dark enough to contrast against a near-white inverse surface" turn
+   out to select the same stop. That is a property of these three ramps today, not a rule — it is
+   not assumed to hold after any future ramp edit, which is exactly why `onInverse` references
+   `{color.<ramp>.<stop>}` directly in `tokens.json` rather than `{semantic...wash}`.
+   **`threads.onInverse` does not exist, and I did not fill it.** `threads.default` is a single
+   borrowed `ink/200` stop, not the top of a dedicated ramp — Threads is deliberately not a hue (see
+   above), so there is no accent-specific ramp to search for a foreground stop *from*. Some other
+   `ink` stop clears AA against `content.primary` (`ink/500`, 6.79:1, is the lightest that does),
+   but using it would just be generic dark-neutral text wearing this role's name, not "Threads, on
+   an inverse surface." Same refusal as the status-ramp gap and the light theme: a role the palette
+   can't honestly satisfy is a finding about the palette, not an invitation to interpolate one.
+   Threads also has no M3 colour-scheme slot wired at all yet (see the "primary is Radar's accent
+   app-wide" known gap in `RadiusTheme.kt`), so nothing consumes this role today either.
+6. **Another M3 slot in the same shape, found while auditing this one, not yet fixed:**
+   `surfaceDim` / `surfaceBright` are unmapped in `RadiusTheme.kt` (M3 baseline default), but M3's
+   own components pair them with `onSurface` — which **is** mapped, to `content.primary`. That
+   means a *mapped* foreground (verified 14.12–18.36:1 against our five real surfaces) can land on
+   an *unmapped*, off-brand M3 baseline tone the moment any component reaches for tonal-elevation
+   surfaces (`Surface(tonalElevation = …)`, some `Scaffold`/sheet variants) — the same "mapped
+   foreground crosses an unmapped surface" shape as `inversePrimary`, just not yet exercised by a
+   component in this codebase. I could not verify exact M3 baseline hex for `surfaceDim`/
+   `surfaceBright` from this environment (no built Compose Material3 artifact to inspect, and I am
+   not going to publish a contrast ratio computed from a guessed hex — same rule as everything
+   else here). Recommend android-kotlin either (a) map `surfaceDim`/`surfaceBright` to two of our
+   already-verified surfaces (e.g. `surface.canvas`/`surface.overlay`, or similar) so they inherit
+   an existing gated pairing instead of an unverified one, or (b) if left unmapped, confirm in a
+   real build that no component in the current screen set renders on them. `errorContainer` /
+   `onErrorContainer` and `scrim`, by contrast, look safe left unmapped: `errorContainer` /
+   `onErrorContainer` are always consumed as a matched M3 pair (both unmapped baseline, internally
+   consistent by M3's own guarantee) as long as no call site mixes one of them with a *mapped* token
+   from the other side of the pair, and `scrim` has no `onScrim` M3 role at all — nothing draws text
+   on it, so there is no contrast pairing to be unwatched in the first place.
 
 ### `overline` tracking (8) — is it a unit error?
 
@@ -274,6 +331,23 @@ CLAUDE.md repo map); I only write in `mobile/design-tokens/`. Here's the exact s
    urgency implied, your call on sequencing.
 6. Once wired, delete the `!! PLACEHOLDER VALUES !!` banner and the `RadiusColors.Placeholder`
    naming — it stops being a placeholder at that point.
+7. **New, addressing the `inversePrimary` finding:** `RadiusDesignTokens.Color.Accent.{Discover,
+   Radar,Like}.onInverse` are generated and gated (see finding #5 above). In `RadiusTheme.kt`,
+   swap:
+   ```kotlin
+   inversePrimary = colors.accent.radar.wash,
+   ```
+   for a new field on `RadiusAccent`/`RadiusAccents` (mirroring `default`/`pressed`/`wash`) —
+   `onInverse`, sourced from `RadiusDesignTokens.Color.Accent.Radar.onInverse` — and use
+   `colors.accent.radar.onInverse` at the call site instead. The value is identical today
+   (`signal/600`) so this is a no-visual-diff change; what changes is that it's now a named,
+   build-gated role instead of a borrowed `wash` value with a comment explaining why it's safe.
+   `Discover.onInverse` / `Like.onInverse` are generated too, ready for whenever the "`primary` is
+   Radar's accent app-wide" gap gets its per-mode M3 scheme. Delete the long `inversePrimary`
+   comment block once wired — the reasoning now lives in `tokens.json` and this README instead.
+8. See finding #6 above for `surfaceDim`/`surfaceBright` — recommend mapping them to existing
+   verified surfaces rather than leaving them at unmapped M3 baseline, since `onSurface` (mapped, to
+   `content.primary`) is what M3 pairs them with.
 
 I have not touched `mobile/android/` — verify the above compiles on your side; I don't have a path
 to run `:android:assembleDebug` without writing into a directory I don't own.

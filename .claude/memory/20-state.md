@@ -7,16 +7,19 @@ phase: 0 — BLE feasibility spike. CODE COMPLETE to the limit of this machine.
 blocking-everything: ZERO hardware measurement exists. go/no-go memo has an empty results table.
 mobile arch: KOTLIN MULTIPLATFORM shared core + native UI (ADR-007). ANDROID FIRST, iOS deferred.
 repo: github.com/iamnotking21/radius · main · PUBLIC · CI green on ubuntu-latest
-infra: not provisioned. backend/ and website/ contain one memory file each. ~7% of v1.
-  (12.5k lines Kotlin · 1.2k Swift · 0 Go · 0 TS · 0 design tokens · 0 proto · 0 migrations)
+infra: not provisioned. backend/ and website/ contain one memory file each. ~8% of v1.
+  (~15k lines Kotlin · 1.2k Swift · 0 Go · 0 TS · 0 proto · 0 migrations)
+  design tokens: REAL — primitives from Figma, semantic layer designed, generated at build time,
+  contrast-gated. fonts still absent (§8 founder call) so type is metrics-only.
 contracts: proto v0 NOT locked · shared API v0.1 GATED · BLE wire v0.1 written, 0/16 cells measured
 hires: 0/2 BLE specialists
 
 ## VERIFIED — by a compiler or the GitHub API, not by assertion
 build: Temurin JDK21 · wrapper 8.13 · AGP 8.9 · Kotlin 2.1.20 · SDK 35
   :shared + :android compile · assembleDebug + assembleRelease (R8) · lint 0 errors
-  114 unit tests (69 shared + 45 android) · 116 conformance vectors executing ·
-  80 gate self-test assertions. code-reviewer post-merge audit applied: 14 must-fix landed.
+  126 unit tests · 116 conformance vectors · 95 gate self-test assertions ·
+  51 WCAG contrast pairings gating :android:assembleDebug
+  code-reviewer ran TWICE: 14 must-fix from the full audit, then 6 more on the delta. all landed.
 CI: run 4 fully green, all 3 jobs, ubuntu-latest. Android toolchain proven on Linux.
   CI has already caught one real bug local testing structurally could not (a Windows-only
   assertion inside the fix for a Windows-only hardcode).
@@ -405,3 +408,37 @@ STILL TRUE: no BLE has run on real hardware. No battery number exists. Nothing h
   again — f91bdd0 removed the token shims, so that cross-agent handoff closed itself.
   4 YAMLs parse; every stage name in every workflow resolves against the table, checked mechanically.
   UNCHANGED AND STILL THE HEADLINE: NOTHING HAS EVER RUN IN CI. Not once, on any provider.
+2026-08-05 android-kotlin · inversePrimary CAVEAT CLOSED, and the caveat's whole CATEGORY got a
+  name. design-system shipped `accent.<mode>.onInverse` (gate 48 -> 51 pairings, all PASS, 0
+  regressions). `RadiusAccent` grew a fourth field, `inversePrimary = colors.accent.radar.onInverse`.
+  ZERO VISUAL DIFF — signal/600 either way — the change is that the build now watches it. The line
+  in the entry above ("hand-verified, not build-enforced") is now stale; that is the point.
+  ALSO WIRED: `surfaceDim`/`surfaceBright` -> `surface.canvas`/`surface.modal`. They were the LAST
+  instance of the trap: M3 pairs both with `onSurface`, which IS mapped, so a verified foreground
+  would have landed on an unverified M3 baseline background and NO GATE WOULD FIRE, because the
+  foreground half passes on its own. design-system refused to compute a ratio for them rather than
+  guess an M3 baseline hex — mapping to our own surfaces makes the question disappear instead of
+  answering it wrong. Not `surface.sunken`, though it is darker: content.primary-on-sunken is not
+  one of the 51, so that trades an unwatched background for an unwatched pairing.
+  KNOWN GAPS list now CLASSIFIES rather than lists: unmapped-and-safe (errorContainer/
+  onErrorContainer — matched M3 pair, safe ONLY while no call site mixes one half with a mapped
+  token; scrim — no `onScrim` role exists) vs unmapped-and-unwatched (the dangerous one, now empty).
+  NEW, RAISED NOT FIXED: `surfaceContainerLowest = surface.sunken` is MAPPED but its pairing with
+  content.primary is not among the 51. Not a risk — sunken is ink/1000, strictly darker than
+  canvas's gated 18.36:1, and contrast is monotone in background luminance — but the argument lives
+  in a comment instead of the gate. Ask design-system for the check.
+  REFUSAL RECORDED, do not go looking: there is NO `accent.threads.onInverse`. Threads is one
+  borrowed ink/200 stop, not a ramp, so any ink step clearing AA would be generic dark-neutral text
+  wearing an accent role's name. `$onInverseRefused` in tokens.json.
+  TESTABILITY CHANGE WORTH KNOWING: the M3 slot map moved out of the `RadiusTheme` composable into
+  `internal fun radiusMaterialColorScheme(colors)`. Every defect this file has had (`outline` at
+  1.14:1, `inversePrimary` baseline purple, surfaceDim) was a SLOT-ASSIGNMENT bug — invisible to
+  generate.mjs and to a screenshot, and previously unreachable from a unit test. 5 new tests assert
+  slots directly. HONEST LIMIT: `onInverse` and `wash` are the same primitive today, so a revert to
+  `wash` still passes the role assertion; it catches every OTHER wrong answer, and gains teeth the
+  moment the roles diverge. A canary test documents the coincidence and says to DELETE it when it
+  fails rather than re-alias.
+  GREEN: assembleDebug + testDebugUnitTest (57 tests, 0 fail) + lintDebug (0 errors, 51 warnings,
+  all pre-existing: Gradle version nags, unused resources, one DefaultLocale in the debug-only
+  SpikeScreen). STILL TRUE, UNCHANGED BY ANY OF THIS: no BLE on real hardware, no battery number,
+  no device has run this theme.

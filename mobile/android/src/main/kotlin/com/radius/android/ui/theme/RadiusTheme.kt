@@ -1,6 +1,7 @@
 package com.radius.android.ui.theme
 
 import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.material3.ColorScheme
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Typography
 import androidx.compose.material3.darkColorScheme
@@ -32,8 +33,9 @@ import com.radius.android.ui.theme.tokens.RadiusDesignTokens
  * mine — a value change is a design-system change, and it arrives here on the next build with no
  * action from me. That is the property the whole indirection was for.
  *
- * Side effect worth knowing: generate.mjs re-derives all 48 documented WCAG contrast pairings and
+ * Side effect worth knowing: generate.mjs re-derives all 51 documented WCAG contrast pairings and
  * exits non-zero on regression, so `:android:assembleDebug` now FAILS on a contrast regression.
+ * (48 at the first drop; +3 when `accent.*.onInverse` was added to cover M3's inverseSurface.)
  *
  * Material 3 is used as a LAYOUT ENGINE here. Its component behaviour, touch targets and
  * accessibility semantics are excellent and free. Its default look is not ours and is overridden
@@ -116,13 +118,26 @@ public data class RadiusBorders(
     val danger: Color,
 )
 
-/** An accent with its full three-stop ramp. */
+/** An accent with its full four-role ramp. */
 @Immutable
 public data class RadiusAccent(
     val default: Color,
     val pressed: Color,
     /** Tinted background for the accent. Pair with [RadiusContentColors.onWash], never the accent itself. */
     val wash: Color,
+    /**
+     * Accent-coloured FOREGROUND for text/icons drawn on an INVERTED surface — M3's `inverseSurface`,
+     * which we map to [RadiusContentColors.primary] (near-white). The Snackbar action label is the
+     * live consumer. Verified 5.20–7.02:1 across the three ramps, gated by generate.mjs.
+     *
+     * IT IS NOT [wash], EVEN WHERE THE HEX MATCHES. Every ramp currently darkens toward its high
+     * stops, so "dark enough to read as a quiet wash near a dark canvas" and "dark enough to read as
+     * text on a near-white surface" happen to select the same primitive. That is a coincidence of
+     * today's ramps, not a rule — the two roles are measured against different backgrounds and are
+     * allowed to diverge. Wiring one to the other is how a Snackbar breaks when a wash tier moves for
+     * reasons that have nothing to do with Snackbars.
+     */
+    val onInverse: Color,
 )
 
 /**
@@ -141,6 +156,12 @@ public data class RadiusAccents(
      * THREADS. Deliberately a neutral ink tone and not a hue: one inbox carrying both origins should
      * not be promoted to a third competing mode colour. One stop only, by design — there is nothing
      * to add a pressed/wash tier from.
+     *
+     * There is also no `threads.onInverse`, and that is a refusal rather than a gap: with no Threads
+     * ramp there is no Threads hue to pick a foreground stop from, and any ink step dark enough to
+     * clear AA on an inverted surface would be generic dark-neutral text wearing an accent role's
+     * name. Recorded as `$onInverseRefused` in tokens.json. Do not fill it locally — if Threads ever
+     * gets a real ramp, the role becomes fillable and that is design-system's call.
      */
     val threads: Color,
 )
@@ -199,16 +220,19 @@ public data class RadiusColors(
                     default = RadiusDesignTokens.Color.Accent.Discover.default,
                     pressed = RadiusDesignTokens.Color.Accent.Discover.pressed,
                     wash = RadiusDesignTokens.Color.Accent.Discover.wash,
+                    onInverse = RadiusDesignTokens.Color.Accent.Discover.onInverse,
                 ),
                 radar = RadiusAccent(
                     default = RadiusDesignTokens.Color.Accent.Radar.default,
                     pressed = RadiusDesignTokens.Color.Accent.Radar.pressed,
                     wash = RadiusDesignTokens.Color.Accent.Radar.wash,
+                    onInverse = RadiusDesignTokens.Color.Accent.Radar.onInverse,
                 ),
                 like = RadiusAccent(
                     default = RadiusDesignTokens.Color.Accent.Like.default,
                     pressed = RadiusDesignTokens.Color.Accent.Like.pressed,
                     wash = RadiusDesignTokens.Color.Accent.Like.wash,
+                    onInverse = RadiusDesignTokens.Color.Accent.Like.onInverse,
                 ),
                 threads = RadiusDesignTokens.Color.Accent.Threads.default,
             ),
@@ -462,21 +486,19 @@ public object RadiusTheme {
         @Composable @ReadOnlyComposable get() = LocalRadiusTypography.current
 }
 
-@Composable
-public fun RadiusTheme(
-    // Dark-first product. RadiusColors.light is null because no light-mode variable is designed, so
-    // this currently selects dark either way — but it IS read, on the next line, and the day a light
-    // palette exists it starts selecting. (It carried a @Suppress("UNUSED_PARAMETER") that was
-    // simply false, and a suppression that lies is worse than none: it trains the next reader to
-    // believe the parameter is decorative.)
-    useDarkTheme: Boolean = isSystemInDarkTheme(),
-    content: @Composable () -> Unit,
-) {
-    val colors = RadiusColors.light.takeIf { !useDarkTheme } ?: RadiusColors.dark
-
-    // M3 slots are filled FROM our tokens so stock components inherit the right look without every
-    // call site re-specifying colours.
-    val materialScheme = darkColorScheme(
+/**
+ * Our tokens projected onto M3's colour slots, so stock components inherit the right look without
+ * every call site re-specifying colours.
+ *
+ * NOT INLINE IN [RadiusTheme], AND NOT PRIVATE, ON PURPOSE. Slot mapping is where the two real bugs
+ * in this file have lived so far (`outline` drawn with a 1.14:1 hairline; `inversePrimary` shipping
+ * baseline M3 purple onto a mapped inverseSurface). Both were assignment errors, invisible to the
+ * token generator and to a screenshot alike. A plain function is unit-testable without a composition
+ * or Robolectric, so the wiring test can assert slot-by-slot that the right ROLE reaches the right
+ * widget — which is the half of the problem generate.mjs structurally cannot see.
+ */
+internal fun radiusMaterialColorScheme(colors: RadiusColors): ColorScheme =
+    darkColorScheme(
         primary = colors.accent.radar.default,
         onPrimary = colors.content.onFill,
         primaryContainer = colors.accent.radar.wash,
@@ -500,29 +522,39 @@ public fun RadiusTheme(
         surfaceContainer = colors.surface.raised,
         surfaceContainerHigh = colors.surface.overlay,
         surfaceContainerHighest = colors.surface.modal,
+
+        // ---- THE SAME SHAPE AS inversePrimary, CAUGHT BEFORE IT SHIPPED. ----
+        // surfaceDim/surfaceBright are the two ends of M3's tonal-elevation range, reached by
+        // `Surface(tonalElevation = …)` and some Scaffold/sheet internals. No component in our
+        // current screen set draws on them — but M3 pairs them with `onSurface`, and `onSurface` IS
+        // mapped (content.primary). Left unmapped, the first component that reaches for one puts a
+        // VERIFIED foreground on an UNVERIFIED, off-brand M3 baseline background, and nothing
+        // catches it, because the foreground half passes on its own. "Unmapped" only stays safe
+        // while BOTH halves of a pairing are unmapped.
+        //
+        // So they take the two ends of our own ladder: canvas is the dimmest broad surface we have,
+        // modal the brightest. Both pairings against content.primary are already in the generator's
+        // 51 (18.36:1 and 14.12:1), so this slot inherits a GATED pairing instead of one nobody can
+        // compute — which also means design-system never has to publish a ratio against an M3
+        // baseline hex it could not read. The question stops existing rather than getting a guessed
+        // answer.
+        //
+        // NOT sunken, though it is darker (ink/1000 vs ink/950): content.primary-on-sunken is not
+        // one of the 51 checks, so picking it would swap an unwatched background for an unwatched
+        // pairing. Same reason surfaceContainerLowest = sunken is flagged below.
+        surfaceDim = colors.surface.canvas,
+        surfaceBright = colors.surface.modal,
+
         inverseSurface = colors.content.primary,
         inverseOnSurface = colors.surface.canvas,
 
-        // ---- THE ONE UNMAPPED SLOT THAT WAS ACTUALLY VISIBLE. ----
-        // inversePrimary is what M3 draws a Snackbar's ACTION LABEL with, on inverseSurface — and
-        // inverseSurface is mapped, so the two above were putting baseline M3 purple on our own
-        // inverted surface. Every other gap in the list at the bottom of this file is unreachable
-        // or invisible; this one shipped a fifth hue into the first component a user taps after an
-        // error.
-        //
-        // WHY THE WASH STOP, WHICH IS NAMED FOR A BACKGROUND. inversePrimary means "primary, as
-        // drawn on inverseSurface". `primary` here is signal/400, which measures 1.84:1 on
-        // inverseSurface — invisible. signal/600 is the ONLY stop in the ramp that clears AA there:
-        // 5.20:1, computed with the same WCAG 2.1 sRGB formula generate.mjs uses. We are using its
-        // VALUE as a foreground; its designed ROLE is a wash background on a dark surface.
-        //
-        // THAT PAIRING IS NOT IN THE GENERATOR'S 48 VERIFIED COMBINATIONS, so it is NOT build
-        // -enforced and a future ramp edit could break it silently. The proper fix is an
-        // `accent/*/onInverse` role in tokens.json — raised to design-system, not invented here.
-        // It stays teal rather than a neutral because inversePrimary must track `primary`, and the
-        // "primary is Radar's accent app-wide" problem is already recorded once below; recording it
-        // twice, in two places that could then diverge, is worse than the gap itself.
-        inversePrimary = colors.accent.radar.wash,
+        // inversePrimary = "primary, as drawn on inverseSurface" — in practice a Snackbar's ACTION
+        // LABEL. `primary` itself (signal/400) measures 1.84:1 there and is invisible, so this slot
+        // needs its own role, not the accent. It now has one: accent.*.onInverse, gated by
+        // generate.mjs at 5.20:1. It reads as the same signal/600 it did when this was borrowing the
+        // `wash` value behind a paragraph of justification — the difference is that the build now
+        // watches it. Reasoning lives in tokens.json and design-tokens/README.md finding #5.
+        inversePrimary = colors.accent.radar.onInverse,
         error = colors.status.danger,
         onError = colors.content.onFill,
         // Elevation is expressed as SURFACE LIGHTENING plus a hairline, per the token notes — not
@@ -545,6 +577,19 @@ public fun RadiusTheme(
         outlineVariant = colors.border.hairline,
     )
 
+@Composable
+public fun RadiusTheme(
+    // Dark-first product. RadiusColors.light is null because no light-mode variable is designed, so
+    // this currently selects dark either way — but it IS read, on the next line, and the day a light
+    // palette exists it starts selecting. (It carried a @Suppress("UNUSED_PARAMETER") that was
+    // simply false, and a suppression that lies is worse than none: it trains the next reader to
+    // believe the parameter is decorative.)
+    useDarkTheme: Boolean = isSystemInDarkTheme(),
+    content: @Composable () -> Unit,
+) {
+    val colors = RadiusColors.light.takeIf { !useDarkTheme } ?: RadiusColors.dark
+    val materialScheme = radiusMaterialColorScheme(colors)
+
     CompositionLocalProvider(
         LocalRadiusColors provides colors,
         LocalRadiusSpacing provides RadiusSpacing(),
@@ -562,16 +607,44 @@ public fun RadiusTheme(
     }
 }
 
-// KNOWN GAPS, recorded here rather than discovered later:
+// KNOWN GAPS, recorded here rather than discovered later.
 //
-//  - errorContainer / onErrorContainer / scrim / surfaceBright / surfaceDim are left at M3 default
-//    because no token maps to them. They are reachable only via stock components we do not use yet.
-//    Interpolating values for them would be inventing palette; raised in the HANDOFF instead.
-//    THE TEST FOR THIS BULLET IS "can it appear on a surface we DID map", not "is it unmapped".
-//    inversePrimary used to sit in this list by omission and failed that test — it is the Snackbar
-//    action label, drawn on inverseSurface, which is mapped. It is now mapped above, with the one
-//    caveat that its contrast against inverseSurface is verified by hand rather than by
-//    generate.mjs. Anything added to this list from now on states which surfaces it can appear on.
+// "Unmapped" is not one category, it is three, and conflating them is what let inversePrimary ship
+// baseline M3 purple into a Snackbar. Every entry below states which one it is:
+//
+//   UNMAPPED-AND-SAFE      — both halves of every pairing it appears in are unmapped, so M3's own
+//                            baseline is internally consistent, or nothing is ever drawn on it.
+//   UNMAPPED-AND-UNWATCHED — a MAPPED token can land against it. THE DANGEROUS ONE: the mapped half
+//                            passes its own check, so no gate fires and the defect is invisible to
+//                            generate.mjs and to a screenshot alike. Fix by mapping the slot to one
+//                            of our verified surfaces — never by measuring against an M3 baseline
+//                            value we cannot read out of the artifact.
+//   MAPPED, PAIRING UNGATED— both halves are ours, but the combination is not one of generate.mjs's
+//                            51 checks. Safe only for a reason you can state; state it.
+//
+//  - errorContainer / onErrorContainer — UNMAPPED-AND-SAFE. M3 always consumes these as a matched
+//    pair, so baseline-on-baseline is internally consistent by M3's own guarantee. The condition on
+//    that safety is real, though: it holds ONLY while no call site mixes one of them with a mapped
+//    token from outside the pair (e.g. content.primary on errorContainer, or onErrorContainer on
+//    surface.raised). If you need one half, map both, and add the pairing to generate.mjs.
+//  - scrim — UNMAPPED-AND-SAFE, and more strongly so: M3 has no `onScrim` role at all. Nothing is
+//    drawn on a scrim, so there is no pairing that could go unwatched.
+//  - surfaceDim / surfaceBright — WAS unmapped-and-unwatched, now mapped (canvas / modal, see the
+//    block above). M3 pairs them with onSurface, which is mapped to content.primary, so a verified
+//    foreground could have landed on an unverified baseline tone the first time any component
+//    reached for tonal elevation. Mapped rather than measured, deliberately.
+//  - inversePrimary — WAS unmapped by omission and was the live instance of that failure: the
+//    Snackbar action label, drawn on a mapped inverseSurface. Now mapped to accent.radar.onInverse
+//    and gated by generate.mjs at 5.20:1, so it is no longer a gap at all.
+//  - surfaceContainerLowest = surface.sunken — MAPPED, PAIRING UNGATED. Both halves are ours, but
+//    content.primary-on-sunken is not one of generate.mjs's 51 checks. Not a risk today and the
+//    reason is arithmetic rather than optimism: sunken is ink/1000, strictly darker than canvas
+//    (ink/950), and contrast against a near-white foreground is monotone in background luminance,
+//    so it can only exceed canvas's gated 18.36:1. Worth asking design-system to add the pairing so
+//    the argument lives in the gate instead of in this comment.
+//
+// THE TEST FOR ADDING TO THIS LIST is "can a MAPPED token appear against it", not "is it unmapped".
+// Anything added from now on names its category and the surfaces it can appear on.
 //  - M3 derives DISABLED colours arithmetically (onSurface at 38% alpha) and offers no hook to
 //    substitute content.disabled. The two are close in intent but not equal. Anywhere disabled
 //    state is load-bearing, set the colour explicitly from content.disabled — and remember it can

@@ -95,7 +95,7 @@ kotlin {
 //   Generating into build/ (gitignored) means there is exactly ONE hex value in the repo per token,
 //   in tokens.json, owned by design-system, and drift is structurally impossible.
 //
-// FREE BONUS, AND IT IS NOT SMALL: generate.mjs re-derives all 48 WCAG contrast pairings and exits
+// FREE BONUS, AND IT IS NOT SMALL: generate.mjs re-derives all 51 WCAG contrast pairings and exits
 //   non-zero on a regression. Wiring it here makes the accessibility contrast gate a hard failure
 //   of `:android:assembleDebug` — not a thing someone remembers to run.
 //
