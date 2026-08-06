@@ -30,6 +30,14 @@ reviews: code-reviewer TWICE (14 must-fix on the full audit, 6 on the delta — 
   growth-conversion on monetization (no banned pattern; 7 unbacked CLAIMS instead)
 structural proofs: 0 INTERNET permission in the merged manifest, BOTH variants ⇒ the app cannot
   open a socket. Spike harness absent from release (0 of 105 classes).
+FIRST RUN ON AN ANDROID RUNTIME 2026-08-05 — emulator (API 36), UI ONLY, NOT hardware:
+  app installs, launches, no crash. Discover + Radar render. Mode accents CORRECT on screen
+  (Discover amber, Radar teal). Ghost mode = one tap, NO confirm dialog (invariant 10 visually
+  holds). "Start Radar" correctly DISABLED with honest copy "the radio is not wired up yet".
+  NO map, NO bearing, NO direction anywhere (invariant 1 visually holds).
+  design tokens confirmed applied on a real Android renderer, not just in a unit test.
+  **BLE UNTESTED AND UNTESTABLE HERE** — an emulator has no radio. Nothing about discovery,
+  battery, or RPA rotation was learned. mobile/CLAUDE.md: simulator BLE result = invalid.
 
 ## STILL UNVERIFIED — do not confuse with the above
 every BLE behaviour · battery · discovery latency · band accuracy · all of iOS · every
