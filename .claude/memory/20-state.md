@@ -44,6 +44,28 @@ FIRST RUN ON REAL HARDWARE 2026-08-07 — Xiaomi Redmi 15 5G (25057RN09G, Androi
   200% font scale checked ON THIS HANDSET, no clipping. Insets, pinned controls, steppers verified
   by uiautomator BOUNDS, not by eye.
 
+FIRST REAL TELEMETRY 2026-08-07 — Redmi 15 5G, ~2.4 min CAPTURE run, PLUGGED IN so battery
+  figures are correctly VOID. Pipeline proven end to end: 7 files written, adb pull works.
+  Design decisions now observable OUTSIDE a test, in a real event log:
+    "scan-only: no advertise role requested"  ⇒ AdvertiseGuard fail-closed default (dec 35)
+    "SCAN_STARTED ... startsInWindow=1"       ⇒ ScanStartGate budget counting (dec 47)
+    "DUTY: role=SCAN_ONLY source=DEBUG_SPIKE_HARNESS" ⇒ the greppable non-production grant
+    "epoch boundary day=20672 epoch=23 pruneSupersededAt destroyed=0 ring=K"
+       ⇒ ADR-008 M4 KEY DESTRUCTION FIRED ON REAL HARDWARE at a real epoch boundary, and
+         correctly destroyed NOTHING because a single-entry ring is never pruned (dec 62).
+         rows 54/60/77 (my own corrected predicate) all confirmed outside a test.
+    3 density buckets with 0 packets each ⇒ empty buckets emitted from a TIMER (dec: a success
+         rate computed only over buckets where something succeeded is 100% by construction)
+  DEVICE CAPABILITY, measured not assumed: peripheral role SUPPORTED (dec 45's corrected check),
+    multiple-advertisement SUPPORTED, availability READY, 0 scan failures.
+  DEVICE LIMITS, measured: BATTERY_PROPERTY_CURRENT_NOW and ENERGY_COUNTER both UNSUPPORTED
+    (Int.MIN_VALUE / Long.MIN_VALUE). drain must come from level_pct + charge_counter_uah,
+    both of which work. the column is named ..._RAW_SIGN_UNVERIFIED, which is why we noticed.
+  0 sightings is CORRECT, not a failure: the scan filters on our service UUID (dec 46), so one
+    handset alone can only ever see zero.
+  scan_on_ms ≈ elapsed_ms (141767/141805) = HOST-REQUESTED continuous. The contracted 25% duty
+    happens INSIDE the controller. This number can never show a duty violation — only battery can.
+
 ## STILL UNVERIFIED — do not confuse with the above
 every BLE behaviour · battery · discovery latency · band accuracy · all of iOS · every
 accessibility claim (arithmetic over tokens, no TalkBack, no device) · anything needing a radio.
