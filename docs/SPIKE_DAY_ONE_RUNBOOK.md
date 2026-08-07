@@ -47,6 +47,23 @@ adb install -r mobile/android/build/outputs/apk/debug/android-debug.apk
 
 `adb devices` must list the phone before `install` will work. If it says `unauthorized`, unlock the phone and accept the prompt.
 
+### Xiaomi / Redmi / POCO — learned on hardware 2026-08-05
+
+Verified on a Redmi 15 5G (Android 16). Xiaomi needs more than stock Android and fails in ways that do not name themselves:
+
+- **`INSTALL_FAILED_USER_RESTRICTED: Install canceled by user`** — nothing to do with the code. Developer options → turn on **Install via USB** *and* **USB debugging (Security settings)**. Xiaomi normally demands a Mi account signed in, and sometimes a SIM inserted, before it lets you.
+- **`adb shell pm grant` DOES NOT WORK.** It fails with `SecurityException: Neither user 2000 nor current process has GRANT_RUNTIME_PERMISSIONS`. Runtime permissions must be granted **by tapping on the phone**. There is no workaround — budget the taps into the procedure rather than scripting them.
+- **`adb shell svc bluetooth enable` DOES work**, and returned Success. That is the reliable way to get the radio on without touching the phone. Confirm with `adb shell settings get global bluetooth_on` — `1` means on.
+- **The device drops off `adb` easily.** If `adb devices` goes empty mid-session, replug and re-check the USB mode is **File transfer**, not charging.
+
+**Fallback that always works** — if the toggles keep fighting, push the file and install by tapping:
+
+```bash
+adb push mobile/android/build/outputs/apk/debug/android-debug.apk /sdcard/Download/radius-spike.apk
+```
+
+Then on the phone: **Files → Downloads → tap it → Install.** `adb` still works for pulling the capture files afterwards, which is the part that matters.
+
 **Label each phone physically.** Masking tape and a marker. You will confuse them within ten minutes otherwise, and a mislabelled phone silently corrupts every result that follows.
 
 Record for each: make, model, Android version, and **chipset** (Settings → About phone, or `adb shell getprop ro.board.platform`). The chipset is the variable that actually matters.
