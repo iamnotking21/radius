@@ -6,6 +6,7 @@ import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -42,6 +43,15 @@ internal class SpikeActivity : ComponentActivity() {
         }
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        // FOUND ON A REDMI 15 5G (Android 16 / API 36): without this the title rendered UNDER the
+        // status bar, with the clock and battery icons drawn on top of it.
+        //
+        // Not optional and not cosmetic. From Android 15 (API 35) the window is edge-to-edge whether
+        // you ask for it or not — `windowOptOutEdgeToEdge` is ignored for apps targeting 35+ — so
+        // the only question is whether the app applies the insets or lets the system bars sit on
+        // the content. Calling this explicitly (as MainActivity already does) makes the contract
+        // visible rather than implicit, and SpikeScreen consumes it with `safeDrawing`.
+        enableEdgeToEdge()
         super.onCreate(savedInstanceState)
         permissionsGranted = requiredPermissions().all { granted(it) }
 

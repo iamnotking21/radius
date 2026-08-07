@@ -38,6 +38,11 @@ FIRST RUN ON AN ANDROID RUNTIME 2026-08-05 — emulator (API 36), UI ONLY, NOT h
   design tokens confirmed applied on a real Android renderer, not just in a unit test.
   **BLE UNTESTED AND UNTESTABLE HERE** — an emulator has no radio. Nothing about discovery,
   battery, or RPA rotation was learned. mobile/CLAUDE.md: simulator BLE result = invalid.
+FIRST RUN ON REAL HARDWARE 2026-08-07 — Xiaomi Redmi 15 5G (25057RN09G, Android 16/API 36),
+  SPIKE HARNESS UI ONLY, STILL NO RADIO RESULT. Harness installs, launches, records, exports.
+  3 layout defects found and fixed on-device; 1 reported defect DISPROVEN (see LOG).
+  200% font scale checked ON THIS HANDSET, no clipping. Insets, pinned controls, steppers verified
+  by uiautomator BOUNDS, not by eye.
 
 ## STILL UNVERIFIED — do not confuse with the above
 every BLE behaviour · battery · discovery latency · band accuracy · all of iOS · every
@@ -119,3 +124,10 @@ DEFERRED: all iOS · Mac · Carrier B · B7 · relay-only calling (G5, with call
 2026-08-05 orchestrator · nesting-comment trap hit 4x independently; now a gate. Root cause of
   one hit was decision row 60 stating a wrong predicate that Android implemented faithfully —
   the defect was in MY recorded decision, corrected by rows 77/78.
+2026-08-07 android-kotlin · spike harness on a REAL Redmi 15 5G. "Screen does not scroll" was
+  NOT a bug: MIUI refuses `adb shell input` (INJECT_EVENTS) but prints to stderr and EXITS 0, so
+  an undelivered swipe looks like a dead UI. Drove it with /system/bin/uinput instead. Real fixes:
+  missing safeDrawing insets (API35+ edge-to-edge is not opt-out-able); Start/Stop moved OUT of a
+  2.5-screen scroll into a pinned bar; and a Row-weight bug that rendered "Mode" as M/o/d/e —
+  found LIVE a second time in Stat(), where one row measured 1099px tall. oem.md now carries the
+  Xiaomi host-toolchain table (pm grant + input + sendevent REFUSED, svc bluetooth WORKS).

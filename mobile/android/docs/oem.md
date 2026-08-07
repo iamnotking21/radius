@@ -3,9 +3,15 @@
 Owner: android-kotlin. Living document. **Every row must be confirmed on a physical device
 before it is trusted.** Rows marked UNCONFIRMED are prior knowledge, not evidence.
 
-Status: **NOTHING IN THIS FILE HAS BEEN VERIFIED ON HARDWARE.** B5 is closed and the code now
-builds and packages, but a build is not a radio. This is the pre-flight checklist for the Phase 0
-spike, not a report of results.
+Status: **MOSTLY UNVERIFIED, WITH ONE HANDSET NOW PARTLY REPORTED ON.** B5 is closed and the code
+builds and packages, but a build is not a radio. This is still the pre-flight checklist for the
+Phase 0 spike rather than a report of results — EXCEPT for the rows below marked CONFIRMED, which
+were observed on a physical Xiaomi Redmi 15 5G during the first hardware run of the harness. Those
+rows are about the HOST TOOLCHAIN (what adb can do to the phone), not yet about the radio.
+
+| device | model | OS | notes |
+|---|---|---|---|
+| Xiaomi Redmi 15 5G | 25057RN09G | Android 16 / API 36, Qualcomm SM6375, 1080x2340 @450dpi | first device the harness ever ran on. Host-toolchain rows below are from this handset. |
 
 **The instrument that fills this file in now exists**: `mobile/android/src/debug/kotlin/com/radius/android/spike/`,
 a debug-only harness reachable as a separate launcher icon ("Radius Spike") or by
@@ -52,6 +58,41 @@ are not. Radar must be able to detect that it was killed and say so.
 | Autostart permission | Off by default. Without it the app cannot restart after being killed. | UNCONFIRMED |
 | "Lock" in recents | User must lock the task in the recents switcher to survive a swipe-away. | UNCONFIRMED |
 | Workaround | Onboarding step with a deep link to the autostart settings screen. | UNCONFIRMED |
+| `pm grant` blocked | `adb shell pm grant` throws `SecurityException: Neither user 2000 nor current process has GRANT_RUNTIME_PERMISSIONS`. Runtime permissions MUST be granted by tapping on the device. No workaround. | **CONFIRMED** Redmi 15 5G |
+| `input` blocked | `adb shell input tap/swipe/keyevent` throws `SecurityException: ... INJECT_EVENTS`. MIUI gates input injection behind "USB debugging (Security settings)", which requires a signed-in Xiaomi account. | **CONFIRMED** Redmi 15 5G |
+| `sendevent` blocked | SELinux (Enforcing) denies `shell` write access to `input_device`, even though `shell` is in group `input` and `/dev/input/event*` is `crw-rw---- root:input`. DAC permits, MAC refuses. | **CONFIRMED** Redmi 15 5G |
+| `svc bluetooth` works | `adb shell svc bluetooth enable` returns `Success` and the radio comes up. This is the reliable scripted way to get Bluetooth on for a run. | **CONFIRMED** Redmi 15 5G |
+
+#### The Xiaomi adb trap, and why it cost a session
+
+`adb shell input` prints its `SecurityException` to **stderr and still exits 0**. A swipe that was
+never delivered is therefore indistinguishable, from the shell's exit status alone, from a swipe
+that was delivered and did nothing.
+
+That is not hypothetical: the first hardware run of the spike harness was reported as "the screen
+does not scroll — two swipes produced pixel-identical screenshots". The screen scrolled fine. The
+swipes never reached the app. `uiautomator dump` confirmed the Compose scroll container was present
+and `scrollable="true"` the whole time.
+
+**Rule: on a Xiaomi, never conclude anything about the UI from an `adb shell input` gesture.**
+Read stderr, or drive the gesture a way that works.
+
+The way that works is `/system/bin/uinput`, which registers a virtual input device in the kernel and
+so is subject to neither `INJECT_EVENTS` nor the SELinux rule on the real touchscreen node:
+
+```
+# uinput takes a POSITIONAL file argument (not -f), and the file is a
+# STREAM of JSON objects, NOT a JSON array — an array gives
+# "IllegalStateException: No element left to skip".
+adb push swipe.json /data/local/tmp/ && adb shell uinput /data/local/tmp/swipe.json
+```
+
+Register a Type-B multitouch device (`ABS_MT_SLOT`/`ABS_MT_TRACKING_ID`/`BTN_TOUCH`), allow ~1s
+after `register` for InputReader to enumerate it, then inject. Verified working on this handset.
+
+Also confirmed working over adb on this device, for the avoidance of doubt: `am start`,
+`am force-stop`, `uiautomator dump`, `exec-out screencap -p`, `pull`, and
+`settings put system font_scale` (so the 200 % accessibility check IS scriptable here).
 
 ### Huawei / Honor (EMUI / MagicOS)
 | item | detail | status |
@@ -186,6 +227,10 @@ different controller.
    on the same slot is the decision-35 twin case and the log will fill with `E_SELF_EID`.
 2. Grant Bluetooth permissions. On API 29-30 that includes `ACCESS_FINE_LOCATION` — without it a
    scan returns **zero results silently**, which looks exactly like a hardware finding and is not.
+   **On Xiaomi you cannot do this from the laptop** — `pm grant` is refused (see the MIUI table
+   above). Tap the dialogs on the phone. The harness says so on screen when permissions are missing.
+2b. Turn the radio on however you like; `adb shell svc bluetooth enable` is confirmed working on
+   Xiaomi and is the least error-prone way. The harness records adapter state either way.
 3. One handset: **Advertise ON**. The other: leave it off, or turn it on too for a symmetric run.
 4. For a **co-rotation / latency capture**: turn **Max capture ON**. Yield matters, battery does
    not, and the run header records that any battery figure from it is invalid.

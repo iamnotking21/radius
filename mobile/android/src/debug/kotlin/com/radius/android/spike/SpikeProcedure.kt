@@ -129,6 +129,47 @@ internal object SpikeProcedure {
     )
 
     /**
+     * WHY THERE IS NO "JUST GRANT IT FROM THE LAPTOP" SHORTCUT.
+     *
+     * Shown on the screen whenever permissions are missing, because the obvious reflex — grant them
+     * over adb and skip the dialogs — fails on the exact vendor whose battery manager makes this
+     * spike worth running.
+     */
+    const val GRANT_FROM_LAPTOP_NOTE: String =
+        "ON XIAOMI / HyperOS THERE IS NO ADB SHORTCUT FOR THIS. `adb shell pm grant` is REFUSED " +
+            "(SecurityException: neither user 2000 nor current process has " +
+            "GRANT_RUNTIME_PERMISSIONS). CONFIRMED on a Redmi 15 5G, Android 16. Tap the button " +
+            "above and answer the dialogs on the phone. There is no workaround."
+
+    /**
+     * WHAT ADB CAN AND CANNOT DO TO THE HANDSET DURING A RUN.
+     *
+     * Every line here is a result observed on a Redmi 15 5G (25057RN09G, Android 16 / API 36), not
+     * prior knowledge. They are on the screen as well as in `docs/oem.md` because the failure mode
+     * is a person losing a field session to a command that printed an exception to stderr and was
+     * read as "nothing happened".
+     */
+    val HOST_NOTES: List<String> = listOf(
+        "WORKS: adb shell svc bluetooth enable — returns Success and the radio comes on. This is " +
+            "the reliable way to get Bluetooth up without touching the phone. CONFIRMED, Redmi 15 5G.",
+        "REFUSED: adb shell pm grant — SecurityException, GRANT_RUNTIME_PERMISSIONS. Permissions " +
+            "must be tapped on the device.",
+        "REFUSED: adb shell input tap / swipe / keyevent — SecurityException, INJECT_EVENTS. " +
+            "MIUI blocks input injection unless 'USB debugging (Security settings)' is on, and " +
+            "that toggle needs a signed-in Xiaomi account. READ THIS CAREFULLY: `input` prints the " +
+            "exception to STDERR and still exits 0, so a swipe that never happened looks exactly " +
+            "like a swipe that did nothing. If a gesture appears to have no effect, run it again " +
+            "and read stderr before concluding the SCREEN is broken.",
+        "REFUSED: sendevent on /dev/input/* — SELinux denies shell write access to input_device " +
+            "even though shell is in the `input` group and the node is crw-rw----. DAC allows it; " +
+            "MAC does not.",
+        "WORKS: /system/bin/uinput — registers a virtual touchscreen in the kernel and bypasses " +
+            "both checks. This is the only scripted-gesture route on this handset.",
+        "WORKS: adb shell uiautomator dump, adb exec-out screencap -p, adb shell am start, " +
+            "adb pull. Enough to launch the harness, watch it and collect the files.",
+    )
+
+    /**
      * Step-by-step, per mode. Short lines: this gets read on a phone screen at 200 % font scale.
      */
     fun steps(mode: SpikeMode): List<String> = when (mode) {
@@ -140,8 +181,9 @@ internal object SpikeProcedure {
                 "epoch boundaries. Battery figures from that run are VOID and the header says so.",
             "4. Leave it alone. Do not open other Bluetooth apps; do not toggle Bluetooth unless " +
                 "the Bluetooth-restart condition is the one you are capturing.",
-            "5. Stop the run from the notification, then pull the folder with the adb line at the " +
-                "bottom of this screen.",
+            "5. Stop the run from the notification, or with the Stop button pinned at the bottom " +
+                "of this screen — it is there at every scroll position, on purpose. Then pull the " +
+                "folder with the adb line in the EXPORT section.",
         )
 
         SpikeMode.LATENCY_PROBE -> listOf(

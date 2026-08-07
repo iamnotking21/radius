@@ -1,11 +1,15 @@
 package com.radius.android.spike
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawing
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
@@ -16,6 +20,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextAlign
@@ -38,6 +43,22 @@ import com.radius.shared.ble.DutyProfile
  * What is NOT here, on purpose: charts, smoothing, rolling averages, "signal quality" gauges. Every
  * one of those is an interpretation, and the interpretation belongs off-device where it can be
  * checked against the raw file.
+ *
+ * ## Layout rules, learned on hardware
+ *
+ * Three things were wrong the first time this ran on a real handset (Redmi 15 5G, API 36) and all
+ * three are structural, so they are written down rather than left to be re-derived:
+ *
+ *  - **The window is edge-to-edge and we must say what to do about it.** API 35+ ignores the
+ *    opt-out. Insets are consumed ONCE, here, with `safeDrawing` on the root — status bar, nav bar
+ *    and display cutout together. Content is clipped to the safe area rather than scrolling under a
+ *    transparent bar: this is an instrument, and a number half-hidden behind a clock is a number
+ *    somebody misreads.
+ *  - **Start/Stop is NEVER inside the scroll.** The procedure text alone is two and a half screens,
+ *    and the operator is holding two phones in a car park. A control that requires finding the
+ *    right scroll offset first is a control that does not exist under field conditions. It is
+ *    pinned to the bottom, with the one-line run status next to it.
+ *  - **A label in a Row never competes with its own value for width.** See [StepperRow].
  */
 @Composable
 internal fun SpikeScreen(
@@ -50,12 +71,52 @@ internal fun SpikeScreen(
     onStop: () -> Unit,
     onFlush: () -> Unit,
 ) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(RadiusTheme.colors.surface.canvas)
+            // ONE inset consumption for the whole screen. safeDrawing = system bars + display
+            // cutout + IME, so this survives a gesture-nav phone, a three-button phone and a
+            // punch-hole cutout without three separate fixes.
+            .windowInsetsPadding(WindowInsets.safeDrawing),
+    ) {
+        SpikeBody(
+            stats = stats,
+            config = config,
+            permissionsGranted = permissionsGranted,
+            onRequestPermissions = onRequestPermissions,
+            onConfigChange = onConfigChange,
+            // weight(1f), NOT fillMaxSize: the scrolling body takes whatever is left AFTER the
+            // pinned bar has been measured. Reverse those and the bar is pushed off the bottom of
+            // the screen by the very content it exists to stay in front of.
+            modifier = Modifier.weight(1f),
+        )
+        RunControlBar(
+            stats = stats,
+            config = config,
+            permissionsGranted = permissionsGranted,
+            onStart = onStart,
+            onStop = onStop,
+            onFlush = onFlush,
+        )
+    }
+}
+
+/** Everything that is allowed to scroll. Reference material, live counters, the trust table. */
+@Composable
+private fun SpikeBody(
+    stats: SpikeStats,
+    config: SpikeConfig,
+    permissionsGranted: Boolean,
+    onRequestPermissions: () -> Unit,
+    onConfigChange: (SpikeConfig) -> Unit,
+    modifier: Modifier = Modifier,
+) {
     val spacing = RadiusTheme.spacing
     val colors = RadiusTheme.colors
 
     Column(
-        modifier = Modifier
-            .fillMaxSize()
+        modifier = modifier
             .verticalScroll(rememberScrollState())
             .padding(spacing.space16),
         verticalArrangement = Arrangement.spacedBy(spacing.space8),
@@ -73,10 +134,15 @@ internal fun SpikeScreen(
         HorizontalDivider(color = colors.border.hairline)
 
         if (!permissionsGranted) {
-            Text("Bluetooth permissions not granted. A scan without them returns NOTHING, silently.")
+            Text(
+                "Bluetooth permissions not granted. A scan without them returns NOTHING, silently.",
+                color = colors.status.danger,
+            )
             Button(onClick = onRequestPermissions, modifier = Modifier.fillMaxWidth()) {
                 Text("Grant Bluetooth permissions")
             }
+            // CONFIRMED ON A REDMI 15 5G, and it costs a field session if it is a surprise.
+            Text(SpikeProcedure.GRANT_FROM_LAPTOP_NOTE, color = colors.content.secondary)
             HorizontalDivider(color = colors.border.hairline)
         }
 
@@ -179,23 +245,10 @@ internal fun SpikeScreen(
 
         HorizontalDivider(color = colors.border.hairline)
 
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(spacing.space8),
-        ) {
-            Button(
-                onClick = if (stats.running) onStop else onStart,
-                enabled = permissionsGranted,
-                modifier = Modifier.weight(1f),
-            ) {
-                Text(if (stats.running) "Stop run" else "Start run")
-            }
-            OutlinedButton(onClick = onFlush, modifier = Modifier.weight(1f)) {
-                Text("Flush to disk")
-            }
-        }
-
-        HorizontalDivider(color = colors.border.hairline)
+        // Start / Stop / Flush ARE NOT HERE ANY MORE. They live in RunControlBar, pinned below
+        // this scroll region, because on a 1080x2340 handset at default font scale they sat two
+        // and a half screens down behind the procedure text. Do not "tidy" them back into the
+        // flow: the reason is field ergonomics, not aesthetics.
 
         // THE RUN REFUSED TO START. Above everything else, in danger, with the reason spelled out:
         // the previous behaviour was an exception escaping through the foreground service, which
@@ -439,6 +492,16 @@ internal fun SpikeScreen(
 
         HorizontalDivider(color = colors.border.hairline)
 
+        // ------------------------------------------------------------------ driving from a laptop
+        // On the screen, not only in docs/oem.md, for the same reason the procedure is: the person
+        // who needs this is the person who does not have the repository open.
+        Text("DRIVING THIS FROM A LAPTOP — what works, what is refused", color = colors.content.primary)
+        SpikeProcedure.HOST_NOTES.forEach { note ->
+            Text(note, color = colors.content.secondary)
+        }
+
+        HorizontalDivider(color = colors.border.hairline)
+
         // ------------------------------------------------------------------ the trust table
         // LAST, so it is what a person sees after scrolling past a screenful of numbers, which is
         // the moment they are most likely to quote one. Every measurement, and whether it can be
@@ -458,6 +521,88 @@ internal fun SpikeScreen(
     }
 }
 
+/**
+ * PINNED. Never scrolls. The three things a person in a car park must be able to do without first
+ * finding the right scroll offset: start the run, stop the run, and see at a glance whether
+ * anything is being recorded.
+ *
+ * The status line duplicates information that also appears in the scrolling body, and that
+ * duplication is deliberate — the two states that must never be scrolled past are "the run was
+ * REFUSED and nothing is being written" and "the permissions are missing so the scan will return
+ * nothing, silently". Both render here in danger colour, with the full explanation still in place
+ * further up.
+ */
+@Composable
+private fun RunControlBar(
+    stats: SpikeStats,
+    config: SpikeConfig,
+    permissionsGranted: Boolean,
+    onStart: () -> Unit,
+    onStop: () -> Unit,
+    onFlush: () -> Unit,
+) {
+    val spacing = RadiusTheme.spacing
+    val colors = RadiusTheme.colors
+
+    // Nothing is conveyed by colour alone: every state below says what it is in words first.
+    val status: String
+    val statusColor: Color
+    when {
+        stats.startFailure.isNotEmpty() -> {
+            status = "RUN REFUSED — NOTHING IS BEING RECORDED. Reason is above, under RUN REFUSED."
+            statusColor = colors.status.danger
+        }
+
+        !permissionsGranted -> {
+            status = "PERMISSIONS NOT GRANTED — scroll up and tap Grant. A scan without them " +
+                "returns nothing, silently."
+            statusColor = colors.status.danger
+        }
+
+        stats.running -> {
+            status = "RECORDING — ${config.mode.label} · ${stats.elapsedMillis / 1000}s · " +
+                "${stats.sightings} sightings"
+            statusColor = colors.accent.radar.default
+        }
+
+        else -> {
+            status = "IDLE — ${config.mode.label}. Nothing is being written."
+            statusColor = colors.content.secondary
+        }
+    }
+
+    HorizontalDivider(color = colors.border.hairline)
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            // Elevation as surface LIGHTENING plus a hairline, per the token notes — not a shadow.
+            .background(colors.surface.raised)
+            .padding(spacing.space16),
+        verticalArrangement = Arrangement.spacedBy(spacing.space8),
+    ) {
+        Text(
+            text = status,
+            color = statusColor,
+            modifier = Modifier.semantics { contentDescription = status },
+        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(spacing.space8),
+        ) {
+            Button(
+                onClick = if (stats.running) onStop else onStart,
+                enabled = permissionsGranted,
+                modifier = Modifier.weight(1f),
+            ) {
+                Text(if (stats.running) "Stop run" else "Start run")
+            }
+            OutlinedButton(onClick = onFlush, modifier = Modifier.weight(1f)) {
+                Text("Flush to disk")
+            }
+        }
+    }
+}
+
 /** Milliseconds, or a dash. Never a zero standing in for "not measured". */
 private fun Long?.msOrDash(): String = if (this == null || this == -1L) "-" else "${this}ms"
 
@@ -471,6 +616,21 @@ private fun SpikeMode.next(): SpikeMode =
 private fun SpikeMode.previous(): SpikeMode =
     SpikeMode.entries[(ordinal - 1 + SpikeMode.entries.size) % SpikeMode.entries.size]
 
+/**
+ * `label ............ value`, the row this screen is mostly made of.
+ *
+ * BOTH SIDES CARRY A WEIGHT, and that is the whole point. This had the same defect as
+ * [StepperRow] — the label weighted, the value not — and it was live: on hardware,
+ * `Stat("Last radio event", "DUTY role=SCAN_ONLY source=DEBUG_SPIKE_HARNESS")` measured
+ * **1099px tall for one row**, because the value claimed all 990px of content width as its
+ * intrinsic width and the label was left with nothing to render "Last radio event" into but a
+ * single-glyph column.
+ *
+ * It survived the first hardware run only because it sits far enough down the screen that nobody
+ * had scrolled to it yet. With a weight on each side neither can be squeezed below half, a long
+ * value wraps inside its own half instead of eating the label's, and short pairs still read as
+ * left-and-right because the value is end-aligned.
+ */
 @Composable
 private fun Stat(label: String, value: String) {
     Row(
@@ -479,10 +639,15 @@ private fun Stat(label: String, value: String) {
             // One semantics node per row so TalkBack reads "label, value" rather than two
             // disconnected fragments.
             .semantics { contentDescription = "$label: $value" },
-        horizontalArrangement = Arrangement.SpaceBetween,
+        horizontalArrangement = Arrangement.spacedBy(RadiusTheme.spacing.space8),
     ) {
         Text(label, color = RadiusTheme.colors.content.secondary, modifier = Modifier.weight(1f))
-        Text(value, color = RadiusTheme.colors.content.primary)
+        Text(
+            text = value,
+            color = RadiusTheme.colors.content.primary,
+            textAlign = TextAlign.End,
+            modifier = Modifier.weight(1f),
+        )
     }
 }
 
@@ -505,6 +670,27 @@ private fun ToggleRow(
     Text(description, color = RadiusTheme.colors.content.secondary)
 }
 
+/**
+ * Label on its own line, then `[-] value [+]`.
+ *
+ * ## Why it is not one Row
+ *
+ * It was, and on hardware the "Mode" label rendered as `M` / `o` / `d` / `e`, one letter per line,
+ * down the left edge — at DEFAULT font scale, not an accessibility setting.
+ *
+ * The mechanism, because it will recur anywhere a Row mixes text with fixed-size controls: a Row
+ * measures its UNWEIGHTED children first, at whatever width they ask for, and only then divides
+ * what is left among the weighted ones. The label had the weight; the value did not. So
+ * `"CAPTURE (B8 + sightings)"` — 567px of the 990px content width — plus two 163px buttons took
+ * their intrinsic widths first, and the label was handed the 51px remainder, which is one glyph.
+ * Giving the label a bigger weight would only move the failure to a longer mode name.
+ *
+ * So the label stops competing for width at all. Inside the control row it is the VALUE that
+ * carries the weight, because the value is the thing that is allowed to wrap: the buttons are
+ * fixed, the value has slack, and no arrangement of label length, value length or font scale can
+ * squeeze any of the three below its minimum. The extra line costs about 74px and buys an
+ * instrument that cannot be misread.
+ */
 @Composable
 private fun StepperRow(
     label: String,
@@ -513,21 +699,36 @@ private fun StepperRow(
     onDown: () -> Unit,
     onUp: () -> Unit,
 ) {
-    Row(
+    Column(
         modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically,
+        verticalArrangement = Arrangement.spacedBy(RadiusTheme.spacing.space4),
     ) {
-        Text(label, color = RadiusTheme.colors.content.primary, modifier = Modifier.weight(1f))
-        OutlinedButton(onClick = onDown, enabled = enabled) { Text("-") }
-        Text(
-            text = value,
-            color = RadiusTheme.colors.content.primary,
-            modifier = Modifier
-                .padding(horizontal = RadiusTheme.spacing.space8)
-                .semantics { contentDescription = "$label: $value" },
-        )
-        OutlinedButton(onClick = onUp, enabled = enabled) { Text("+") }
+        Text(label, color = RadiusTheme.colors.content.primary)
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(RadiusTheme.spacing.space8),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            // TalkBack would otherwise announce a bare "minus button" with no idea what it steps.
+            OutlinedButton(
+                onClick = onDown,
+                enabled = enabled,
+                modifier = Modifier.semantics { contentDescription = "$label: previous value" },
+            ) { Text("-") }
+            Text(
+                text = value,
+                color = RadiusTheme.colors.content.primary,
+                textAlign = TextAlign.Center,
+                modifier = Modifier
+                    .weight(1f)
+                    .semantics { contentDescription = "$label: $value" },
+            )
+            OutlinedButton(
+                onClick = onUp,
+                enabled = enabled,
+                modifier = Modifier.semantics { contentDescription = "$label: next value" },
+            ) { Text("+") }
+        }
     }
 }
 
