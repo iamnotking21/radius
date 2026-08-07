@@ -6,8 +6,10 @@ before it is trusted.** Rows marked UNCONFIRMED are prior knowledge, not evidenc
 Status: **MOSTLY UNVERIFIED, WITH ONE HANDSET NOW PARTLY REPORTED ON.** B5 is closed and the code
 builds and packages, but a build is not a radio. This is still the pre-flight checklist for the
 Phase 0 spike rather than a report of results — EXCEPT for the rows below marked CONFIRMED, which
-were observed on a physical Xiaomi Redmi 15 5G during the first hardware run of the harness. Those
-rows are about the HOST TOOLCHAIN (what adb can do to the phone), not yet about the radio.
+were observed on a physical Xiaomi Redmi 15 5G during the first hardware runs of the harness. Those
+rows cover the HOST TOOLCHAIN (what adb can do to the phone) and the handset's BATTERY TELEMETRY
+(which `BatteryManager` properties it implements — AOSP constraint 10). **Still nothing here about
+the radio's behaviour**: no sniffer, no second handset, no multi-hour run.
 
 | device | model | OS | notes |
 |---|---|---|---|
@@ -62,6 +64,9 @@ are not. Radar must be able to detect that it was killed and say so.
 | `input` blocked | `adb shell input tap/swipe/keyevent` throws `SecurityException: ... INJECT_EVENTS`. MIUI gates input injection behind "USB debugging (Security settings)", which requires a signed-in Xiaomi account. | **CONFIRMED** Redmi 15 5G |
 | `sendevent` blocked | SELinux (Enforcing) denies `shell` write access to `input_device`, even though `shell` is in group `input` and `/dev/input/event*` is `crw-rw---- root:input`. DAC permits, MAC refuses. | **CONFIRMED** Redmi 15 5G |
 | `svc bluetooth` works | `adb shell svc bluetooth enable` returns `Success` and the radio comes up. This is the reliable scripted way to get Bluetooth on for a run. | **CONFIRMED** Redmi 15 5G |
+| `CURRENT_NOW` unsupported | `BatteryManager.BATTERY_PROPERTY_CURRENT_NOW` returns `Int.MIN_VALUE`. No instantaneous current available. | **CONFIRMED** Redmi 15 5G |
+| `ENERGY_COUNTER` unsupported | `BATTERY_PROPERTY_ENERGY_COUNTER` returns `Long.MIN_VALUE`. | **CONFIRMED** Redmi 15 5G |
+| `CHARGE_COUNTER` + `CAPACITY` work | `charge_counter_uah` moves in 1000 µAh steps and `level_pct` reports 0-100 with `scale=100`. **Drain on this handset must be computed from these two columns.** | **CONFIRMED** Redmi 15 5G |
 
 #### The Xiaomi adb trap, and why it cost a session
 
@@ -89,6 +94,40 @@ adb push swipe.json /data/local/tmp/ && adb shell uinput /data/local/tmp/swipe.j
 
 Register a Type-B multitouch device (`ABS_MT_SLOT`/`ABS_MT_TRACKING_ID`/`BTN_TOUCH`), allow ~1s
 after `register` for InputReader to enumerate it, then inject. Verified working on this handset.
+
+**`uinput` HAS THE SAME EXIT-0 TRAP AS `input`, AND ONE EXTRA CONFIGURATION LINE DECIDES WHETHER
+ANYTHING HAPPENS.** A Type-B multitouch registration with the ev/key/abs bits above and nothing else
+registers fine, injects fine, prints nothing and **exits 0** — and the taps are silently discarded.
+InputReader classifies a device with `ABS_MT_*` but no `INPUT_PROP_DIRECT` as a **touchpad**, not a
+touchscreen, so the events are routed into pointer/cursor handling and never reach the window at
+those coordinates. There is no error anywhere: not on stdout, not on stderr, not in the exit status,
+not in logcat at default verbosity.
+
+The missing line is `UI_SET_PROPBIT` (**configuration type 110**) with `INPUT_PROP_DIRECT` (**1**):
+
+```json
+"configuration": [
+  {"type": 100, "data": [1, 3]},              // UI_SET_EVBIT   EV_KEY, EV_ABS
+  {"type": 101, "data": [330]},               // UI_SET_KEYBIT  BTN_TOUCH
+  {"type": 103, "data": [47, 53, 54, 57, 58]},// UI_SET_ABSBIT  MT_SLOT, MT_POSITION_X/Y, MT_TRACKING_ID, MT_PRESSURE
+  {"type": 110, "data": [1]}                  // UI_SET_PROPBIT INPUT_PROP_DIRECT  <-- WITHOUT THIS, NOTHING HAPPENS
+]
+```
+
+`abs_info` must give `ABS_MT_POSITION_X`/`Y` maxima matching the panel (1079 / 2339 here) or the
+coordinates are rescaled to something else. 2.5 s of `delay` after `register` was reliable on this
+handset; 1.5 s was not always.
+
+**CONFIRMED, Redmi 15 5G, 2026-08-07**: with the propbit, a scripted tap on the harness's pinned
+"Start run" button works first time and every time. Without it, three identical attempts produced
+three identical "nothing happened" screenshots — the same false conclusion the `input` trap above
+produced, arrived at by a different route. On this vendor, **always verify a scripted gesture with a
+screenshot, never with an exit status.**
+
+Related, and worth knowing before you try to script the harness: **`uiautomator dump` did not include
+the pinned bottom bar** holding Start/Stop on this device — the dump contained 23 nodes ending at the
+scroll content, with no clickable Start node, while a screenshot taken one second later showed the
+button plainly. Take the coordinates off the screenshot.
 
 Also confirmed working over adb on this device, for the avoidance of doubt: `am start`,
 `am force-stop`, `uiautomator dump`, `exec-out screencap -p`, `pull`, and
@@ -191,6 +230,33 @@ These apply everywhere and are not worked around, only respected:
    delay and cannot be separated from it — P2 percentiles from that device are an upper bound, not
    a measurement.
 
+10. **Which battery telemetry exists is a PER-DEVICE fact, and P1 depends on it.** `BatteryManager`
+    documents five `BATTERY_PROPERTY_*` values; a handset may implement any subset, and an
+    unimplemented one returns `Long.MIN_VALUE` (`Int.MIN_VALUE` for `CURRENT_NOW`) rather than
+    failing. `SpikeBatteryReader` normalises only that sentinel and writes every property through
+    raw, so the CSV shows what the device actually has.
+
+    **Measured on the Redmi 15 5G (Android 16 / API 36, SM6375), first hardware run:**
+
+    | property | result |
+    |---|---|
+    | `BATTERY_PROPERTY_CURRENT_NOW` | **UNSUPPORTED** — `Int.MIN_VALUE` (`-2147483648`) on every sample |
+    | `BATTERY_PROPERTY_ENERGY_COUNTER` | **UNSUPPORTED** — `Long.MIN_VALUE` (`-9223372036854775808`) |
+    | `BATTERY_PROPERTY_CHARGE_COUNTER` | **works** — µAh, moved 5 395 000 → 5 410 000 over 142 s on charge, i.e. 1000 µAh granularity |
+    | `BATTERY_PROPERTY_CAPACITY` | **works** — 0-100, `scale=100` |
+
+    So on this handset the drain figure comes from `level_pct` and `charge_counter_uah`, and
+    `current_now_ua_RAW_SIGN_UNVERIFIED` / `energy_counter_nwh` are dead columns. That is not a
+    broken run, it is a run with a coarser instrument, and `meta.json` records which kind you are
+    holding in `radio_battery_current_now_supported` / `_energy_counter_supported` /
+    `_charge_counter_supported` — read them before deciding a battery number is missing rather than
+    unsupported. A device where the charge counter is ALSO unsupported has a ±1 % quantisation floor
+    on a measurement budgeted at 4 %/hr, and needs a proportionally longer run.
+
+    `CURRENT_NOW`'s sign convention is OEM-dependent even where it is implemented, and a known family
+    of devices reports milliamps where the API documents microamps. It is never summed or integrated
+    anywhere in the harness. Do not start.
+
 ---
 
 ## Required test matrix before any Phase 0 GO
@@ -251,6 +317,22 @@ different controller.
    | `stop_collectors_joined` | `true` | rows may have been written after the summary was computed; the counters in `meta.json` are then a lower bound. |
    | `wall_clock_step_ms` | 0 | the platform re-synced mid-run. `%/hr` is unaffected (it divides by `elapsed_realtime_ms`), but every `latency_ms` in `latency.csv` is on the wall clock and IS affected. |
    | `latency_unaccounted_cycles` | 0 | the harness was not running for that many latency cycles — Doze or an OEM kill. Not a peer failure, and on a battery-manager run it is the finding. |
+
+7b. **Capability flags vs verdicts — read the right one.** `meta.json` has two kinds of honesty
+   field and they answer different questions. Confusing them was a real defect, found by reading a
+   real capture (run `20260807-054448`): the header said `battery_figures_valid: "true"` while every
+   row of that run's `battery.csv` said `valid_for_drain=false`, because the phone was on a charger.
+   Both were correct in their own terms; the one at the top of the file was the one that read like a
+   verdict and was not.
+
+   | kind | keys | written | means |
+   |---|---|---|---|
+   | capability | `battery_figures_permitted_by_mode`, `bijection_permitted_by_mode`, `latency_figures_permitted_by_mode` | at run START, before any data | this MODE permits that figure. Says NOTHING about the rows. |
+   | verdict | `battery_samples_valid_for_drain` (`"N of M"`), `bijection_screen_evidence`, `latency_figures_observed` | at run STOP, computed from the rows | what this run actually produced. **This is the one you want.** |
+
+   **If the three verdict keys are absent, the run never reached a clean stop** — OEM kill, crash or
+   flat battery — and nothing in the header describes its contents. That is itself a finding on a
+   battery-manager device: go read `events.jsonl` for where it stops.
 
 8. For a latency run, read `latency_missed_peer_cycles` and `latency_peers_departed` TOGETHER
    before reading `p50`. A clean p50 over a run where the peer departed at minute 10 is a

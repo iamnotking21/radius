@@ -46,12 +46,22 @@ internal data class SpikeConfig(
         get() = if (maxCapture) ScanSettings.SCAN_MODE_LOW_LATENCY else null
 
     /**
-     * Whether a battery figure from this run may be quoted at all, before the run has even started.
+     * Whether THE CHOSEN MODE permits a battery figure at all — a fact about the CONFIGURATION,
+     * knowable before the run has started and therefore before any data exists.
+     *
+     * IT IS NOT A VERDICT ABOUT THE ROWS, and the name says `permittedByMode` because it used to
+     * not. It was `batteryFiguresValid`, and it was written into `meta.json` as
+     * `battery_figures_valid`, three lines from the top of the file — while every row of the same
+     * run's `battery.csv` said `valid_for_drain=false` because the handset was on a charger. Both
+     * were true in their own terms and they read as a flat contradiction, with the one a human sees
+     * first being the one that was wrong about the data. See the flag block in `SpikeWriter.writeMeta`
+     * for the header/summary split that now keeps capability and verdict apart.
      *
      * `maxCapture` is the historical trap (decision 44). [SpikeMode.BATTERY_BASELINE] is not
-     * invalid — it is the SUBTRAHEND, and [BatteryDrainEstimator.invalidReason] says so in words.
+     * excluded here — it is the SUBTRAHEND, and [BatteryDrainEstimator.invalidReason] says so in
+     * words.
      */
-    val batteryFiguresValid: Boolean get() = !maxCapture
+    val batteryFiguresPermittedByMode: Boolean get() = !maxCapture
 
     fun describe(): String =
         "mode=$mode slot=$deviceSlot resolve=${resolveSlots.sorted()} advertise=$advertise " +

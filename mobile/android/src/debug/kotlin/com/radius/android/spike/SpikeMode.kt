@@ -72,6 +72,15 @@ internal enum class SpikeMode {
     /** True when the radio is started at all. */
     val usesRadio: Boolean get() = this != BATTERY_BASELINE
 
-    /** True when the bijection counters may be reported. */
+    /**
+     * True when THIS MODE permits the bijection counters to be reported at all.
+     *
+     * A CAPABILITY OF THE MODE, NOT A VERDICT ABOUT A RUN'S DATA. `true` here means only that our
+     * own advertising did not rotate the address inside an epoch and so cannot have manufactured the
+     * failure B8 looks for. It says nothing about whether anything was heard: a CAPTURE run that saw
+     * zero advertisers reports zero bridged addresses, and decision 69 is explicit that a zero is
+     * not a pass. `meta.json` therefore writes this as `bijection_permitted_by_mode` and computes a
+     * separate `bijection_screen_evidence` from the rows at the end of the run.
+     */
     val bijectionValid: Boolean get() = this == CAPTURE
 }

@@ -153,3 +153,24 @@ DEFERRED: all iOS · Mac · Carrier B · B7 · relay-only calling (G5, with call
   2.5-screen scroll into a pinned bar; and a Row-weight bug that rendered "Mode" as M/o/d/e —
   found LIVE a second time in Stat(), where one row measured 1099px tall. oem.md now carries the
   Xiaomi host-toolchain table (pm grant + input + sendevent REFUSED, svc bluetooth WORKS).
+2026-08-07 android-kotlin · NAMING DEFECT found by reading REAL telemetry, not by a test.
+  meta.json said `battery_figures_valid: "true"` while every row of the SAME run's battery.csv
+  said `valid_for_drain=false` (phone on a charger). Both true in their own terms — the flag meant
+  "this MODE permits a battery figure", the column meant "THIS sample counts" — but the one at the
+  top of the file is the one a human reads first, so a reader would have quoted battery numbers
+  from a plugged-in run. Fix is a SPLIT, not a reword: `..._permitted_by_mode` (capability,
+  written at START, before data exists) vs a computed verdict appended at STOP from the rows
+  (`battery_samples_valid_for_drain: "0 of 4"`, `bijection_screen_evidence`,
+  `latency_figures_observed`). Same defect shape in all three flags; `latency_figures_present`
+  asserted PRESENCE on the strength of the mode alone. Bonus property: a run killed by an OEM
+  battery manager never reaches closeMeta, so a missing verdict key now MEANS "no clean stop".
+  Also: `advertiseState STOPPED   epoch=-1` (a normal scan-only event that reads as an error)
+  → `epoch=none` via a named sentinel, double spaces gone.
+  VERIFIED ON THE REDMI, not just compiled: new 173s run emits "0 of 4" against 4 rows of
+  valid_for_drain=false. oem.md gained the per-device battery-telemetry row the matrix wanted —
+  CURRENT_NOW and ENERGY_COUNTER are UNSUPPORTED on this handset (Int/Long.MIN_VALUE), drain must
+  come from level_pct + charge_counter_uah — and a second silent-failure trap: `uinput` needs
+  UI_SET_PROPBIT INPUT_PROP_DIRECT or InputReader treats the device as a TOUCHPAD and discards
+  every tap, printing nothing and exiting 0. Same false conclusion as the `input` trap, different
+  route. Also `uiautomator dump` omitted the pinned Start/Stop bar entirely; take coords off a
+  screenshot.

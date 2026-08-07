@@ -140,6 +140,24 @@ internal class SpikeController @Inject constructor(
     private val duty = SpikeDutyLedger()
 
     private var batterySamples = 0L
+
+    /**
+     * How many of [batterySamples] carried `valid_for_drain=true`, i.e. how many rows may actually
+     * contribute to a %/hr figure.
+     *
+     * THE VERDICT FIELD. `battery_figures_permitted_by_mode` in the header says only that the mode
+     * permits a battery number; this says whether this run produced any. On the Redmi capture that
+     * prompted it the two were 'true' and '0 of 4' — the mode was fine and the phone was on a
+     * charger — and the header alone read as an endorsement of numbers that do not exist.
+     *
+     * Counted here rather than in [BatteryDrainEstimator] on purpose: `validForDrain` is the
+     * composite of a CONFIG fact (`maxCapture`) and a SAMPLE fact (`plugged`), the estimator is a
+     * screen-only helper that is handed samples and knows nothing about the config, and giving its
+     * `add` a defaulted validity parameter would put a half-true default in the one place a wrong
+     * default is unnoticeable. Incremented under [lock] beside `batterySamples` so the numerator and
+     * denominator of the "N of M" cannot be read from two different instants.
+     */
+    private var batterySamplesValidForDrain = 0L
     private var latencyRowsWritten = 0L
     private var densityBucketsWritten = 0L
     private var concurrentPeersNow = 0
@@ -416,9 +434,16 @@ internal class SpikeController @Inject constructor(
         // duration, which is exactly the kind of coupling scan_on_ms cannot afford.
         val sample = batteryReader.read()
 
+        // Computed BEFORE the lock and used both in the row and in the counter, so the cell written
+        // to `battery.csv` and the tally reported in `meta.json` are literally the same boolean. Two
+        // separate evaluations of the same expression would be an invitation for the summary to
+        // drift from the file it is summarising.
+        val validForDrain = cfg.batteryFiguresPermittedByMode && !sample.plugged
+
         val snapshot = synchronized(lock) {
             val w = writer ?: return
             drain.add(sample)
+            if (validForDrain) batterySamplesValidForDrain++
             BatteryRowSnapshot(
                 writer = w,
                 n = ++batterySamples,
@@ -436,7 +461,6 @@ internal class SpikeController @Inject constructor(
         val w = snapshot.writer
 
         val scanMode = SpikeTiming.effectiveScanMode(cfg)
-        val validForDrain = cfg.batteryFiguresValid && !sample.plugged
 
         w.appendBatteryCsv(
             listOf(
@@ -712,10 +736,37 @@ internal class SpikeController @Inject constructor(
             // race in practice; the lock is what makes it closed by CONSTRUCTION rather than by the
             // reader having checked the ordering of the four statements above.
             synchronized(lock) {
-                summary["unique_advertiser_addresses"] = addrToEids.size.toString()
-                summary["unique_ephemeral_ids"] = eidToAddrs.size.toString()
+                val addresses = addrToEids.size
+                val eids = eidToAddrs.size
+                summary["unique_advertiser_addresses"] = addresses.toString()
+                summary["unique_ephemeral_ids"] = eids.toString()
                 summary["bridged_addresses"] = bridgedAddresses().toString()
                 summary["bridged_eids"] = bridgedEids().toString()
+                // THE B8 VERDICT, computed from the rows — as opposed to
+                // `bijection_permitted_by_mode` in the header, which is computed from the MODE
+                // before a single packet has arrived. The two answer different questions and the
+                // header used to be the only one present, under a name ('bijection_valid') that
+                // read like this one.
+                //
+                // The zero case is the whole point. A CAPTURE run that heard nothing reports
+                // `bridged_addresses=0`, which is the same number a perfectly-rotating fleet
+                // produces. Decision 69 already says a zero is not a pass; this makes the
+                // difference between "screened and clean" and "screened nothing" visible in the
+                // header instead of requiring the reader to notice the sighting count.
+                summary["bijection_screen_evidence"] = when {
+                    !cfg.mode.bijectionValid ->
+                        "NONE — ${cfg.mode.name} is not a bijection screen. Our own cycling " +
+                            "rotates this device's advertising address inside a protocol epoch, so " +
+                            "the bridged_* counters above are self-inflicted and must not be read."
+                    addresses == 0 && eids == 0 ->
+                        "NOTHING SCREENED — 0 advertiser addresses, 0 ephemeral ids observed. The " +
+                            "bridged_* counters above are zero because there was no data, not " +
+                            "because the rotation is correct. Decision 69."
+                    else ->
+                        "$addresses advertiser addresses / $eids ephemeral ids screened. A zero in " +
+                            "bridged_* is still NOT a pass — Android never exposes the TxAdd bit, " +
+                            "so a fixed public address reads here as a rotating one (decision 69)."
+                }
             }
             summary["diagnostics_dropped"] = radio.diagnosticsDropped.toString()
             // A dropped radio EVENT is a different hole from a dropped diagnostic and has to be
@@ -741,6 +792,13 @@ internal class SpikeController @Inject constructor(
 
             // ---- P1 battery ----
             summary["battery_samples"] = batterySamples.toString()
+            // THE P1 VERDICT. `battery_figures_permitted_by_mode` in the header says the MODE allows
+            // a battery number; this says how many rows of this run may actually contribute to one.
+            // "0 of 4" and "true" sitting in the same file is not a contradiction once both are
+            // named for what they measure — and "0 of 4" is the one that answers the question the
+            // reader came with.
+            summary["battery_samples_valid_for_drain"] =
+                "$batterySamplesValidForDrain of $batterySamples"
             summary["battery_level_delta_pct"] = drain.levelDeltaPct.toString()
             summary["battery_charge_delta_uah"] = drain.chargeDeltaUah.toString()
             summary["battery_ever_plugged"] = drain.everPlugged.toString()
@@ -764,6 +822,23 @@ internal class SpikeController @Inject constructor(
                     "drain, not app drain: subtract a paired BATTERY_BASELINE run on this handset."
 
             // ---- P2 latency ----
+            // THE P2 VERDICT, same shape as the other two: what the ROWS say, not what the mode
+            // permits. `latency_figures_permitted_by_mode` in the header is true for a LATENCY_PROBE
+            // run that produced nothing at all — a probe with one handset, or with the peer's
+            // Bluetooth off, looks identical in the header to a good one. It was called
+            // `latency_figures_present`, which asserted presence on the strength of the mode alone.
+            summary["latency_figures_observed"] = when {
+                cfg.mode != SpikeMode.LATENCY_PROBE ->
+                    "NONE — ${cfg.mode.name} does not run the P2 cycle. Any latency.csv rows here " +
+                        "are incidental, not a measurement."
+                latency.totalSamples == 0L ->
+                    "NONE — 0 samples over ${latency.cyclesClosed} closed cycles. The probe ran " +
+                        "and heard nobody: check that the second handset was advertising, on the " +
+                        "same slot list, and within range."
+                else ->
+                    "${latency.totalSamples} samples over ${latency.cyclesClosed} closed cycles — " +
+                        "UNCORRECTED for clock skew, see latency_correction_required."
+            }
             summary["latency_rows"] = latencyRowsWritten.toString()
             summary["latency_samples"] = latency.totalSamples.toString()
             summary["latency_min_ms"] =
@@ -1162,11 +1237,31 @@ internal class SpikeController @Inject constructor(
     }
 
     private fun onAdvertiseState(state: AdvertiseState) {
-        record(
-            EventKind.RADIO,
-            "advertiseState ${state.status} ${state.reason ?: ""} ${state.detail ?: ""} " +
-                "epoch=${state.epochIndex}",
+        // TWO READABILITY DEFECTS, BOTH FOUND BY READING A REAL events.jsonl RATHER THAN A TEST.
+        //
+        // 1. `epoch=-1`. `AdvertiseState.epochIndex` is documented as -1 when not advertising, and
+        //    the scan-only Redmi run logged `advertiseState STOPPED   epoch=-1` twice. In a file
+        //    whose value is that a reader can tell a real anomaly from a normal one, a bare -1 reads
+        //    as an error code — and the two lines it appeared on were the most normal events in the
+        //    run. It is rendered as `epoch=none` against the named [NO_ADVERTISE_EPOCH] sentinel:
+        //    still one field per line so `grep epoch=` still finds every one, but no number that
+        //    invites a reader to wonder what went wrong.
+        //
+        //    The sentinel itself lives in `mobile/shared`, whose public API is a CONTRACT with two
+        //    consumers — naming it there is the right fix and is not this change's to make.
+        //
+        // 2. The double spaces. `reason` and `detail` are both null on a clean STOPPED, and string
+        //    interpolation left `STOPPED   epoch=`. Blank parts are dropped instead.
+        val epoch =
+            if (state.epochIndex == NO_ADVERTISE_EPOCH) "none" else state.epochIndex.toString()
+        val parts = listOfNotNull(
+            "advertiseState",
+            state.status.name,
+            state.reason?.name,
+            state.detail?.takeIf { it.isNotBlank() },
+            "epoch=$epoch",
         )
+        record(EventKind.RADIO, parts.joinToString(" "))
         publish()
     }
 
@@ -1511,7 +1606,8 @@ internal class SpikeController @Inject constructor(
         resolutionTable = emptyMap(); resolutionTableEpoch = Long.MIN_VALUE
         lastEventLine = ""
         drain.reset(); latency.reset(); densityAccumulator.reset()
-        batterySamples = 0L; latencyRowsWritten = 0L; densityBucketsWritten = 0L
+        batterySamples = 0L; batterySamplesValidForDrain = 0L
+        latencyRowsWritten = 0L; densityBucketsWritten = 0L
         concurrentPeersNow = 0; emitStartLagMs = -1L
         startClock = null; advertiseRequest = null
     }
@@ -1550,6 +1646,22 @@ internal class SpikeController @Inject constructor(
 
         /** Screen refresh cap. The file is never throttled; only the UI snapshot is. */
         private const val PUBLISH_INTERVAL_MS = 250L
+
+        /**
+         * The value `AdvertiseState.epochIndex` carries when there is no live frame and therefore no
+         * epoch — i.e. any status other than ADVERTISING.
+         *
+         * Named HERE rather than used as a bare `-1` at the log site so the sentinel is greppable
+         * and the log line can say `epoch=none`. `-1` in an event log reads as a failure, and it was
+         * printed twice in an entirely healthy scan-only run.
+         *
+         * IT IS A MIRROR OF A CONSTANT THAT DOES NOT EXIST YET. `mobile/shared`'s `AdvertiseState`
+         * documents the sentinel in prose and hard-codes it; naming it there is the correct fix, but
+         * `shared/`'s public API is a contract with two consumers and changing it unilaterally is
+         * forbidden (mobile/CLAUDE.md). If it is ever named upstream, this constant is deleted and
+         * the reference re-pointed.
+         */
+        private const val NO_ADVERTISE_EPOCH = -1
 
         /**
          * UNMEASURED GUESS — see `SpikeTiming.kt` for the block this belongs to.

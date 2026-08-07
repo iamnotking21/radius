@@ -190,12 +190,33 @@ internal class SpikeWriter(context: Context, val runId: String) {
         // THE HONESTY FLAGS. A battery figure from a max-capture run is fiction, and a bijection
         // verdict from a latency-probe run is self-inflicted; recording the flags in the header is
         // what stops someone quoting either six weeks from now.
+        //
+        // EVERY FLAG IN THIS BLOCK IS NAMED `..._permitted_by_mode`, AND THAT NAMING IS THE FIX FOR
+        // A REAL DEFECT FOUND BY READING A REAL CAPTURE OFF A REDMI 15 5G.
+        //
+        // They were `battery_figures_valid`, `bijection_valid` and `latency_figures_present`. On run
+        // 20260807-054448 the header said `"battery_figures_valid": "true"` while every row of the
+        // same run's `battery.csv` said `valid_for_drain=false`, because the handset was plugged in.
+        // Neither statement was wrong: the flag meant "CAPTURE mode permits a battery figure", the
+        // column meant "THIS sample was taken on battery and counts". But they read as a direct
+        // contradiction, and the one three lines from the top of the file is the one a person reads
+        // first — so a reader opening `meta.json` alone would conclude the battery numbers from a
+        // charging run were good. Exactly backwards, in the one direction that is not survivable.
+        //
+        // These fields are written at OPEN and can therefore only describe the CONFIGURATION. The
+        // verdict about the DATA cannot exist yet — it is derived from the rows and appended by
+        // `closeMeta` at the end of the run, as `battery_samples_valid_for_drain`,
+        // `bijection_screen_evidence` and `latency_figures_observed`. That split is load-bearing in
+        // the other direction too: a run killed mid-flight by an OEM battery manager never reaches
+        // `closeMeta`, and its header must not be left asserting a verdict about rows nobody counted.
         fields["mode"] = config.mode.name
         fields["mode_note"] = SpikeProcedure.headline(config.mode, config.maxCapture)
         fields["max_capture"] = config.maxCapture.toString()
-        fields["battery_figures_valid"] = config.batteryFiguresValid.toString()
-        fields["bijection_valid"] = config.mode.bijectionValid.toString()
-        fields["latency_figures_present"] = (config.mode == SpikeMode.LATENCY_PROBE).toString()
+        fields["mode_flags_note"] = MODE_FLAGS_NOTE
+        fields["battery_figures_permitted_by_mode"] = config.batteryFiguresPermittedByMode.toString()
+        fields["bijection_permitted_by_mode"] = config.mode.bijectionValid.toString()
+        fields["latency_figures_permitted_by_mode"] =
+            (config.mode == SpikeMode.LATENCY_PROBE).toString()
         // Timing constants, verbatim, because every one of them is an UNMEASURED GUESS and a run is
         // only reproducible against the values it actually used.
         SpikeTiming.describeForMeta().forEach { (k, v) -> fields[k] = v }
@@ -346,6 +367,23 @@ internal class SpikeWriter(context: Context, val runId: String) {
         private const val TAG = "SpikeWriter"
         private const val FLUSH_EVERY = 25
         const val SCHEMA = "radius-spike/1"
+
+        /**
+         * Written into every `meta.json` immediately BEFORE the three capability flags, so that a
+         * person scrolling from the top hits the disclaimer before the booleans rather than after.
+         *
+         * It names the three verdict keys explicitly, because the failure this prevents is someone
+         * reading a capability flag as a verdict — and the cure for that is not a subtler word, it
+         * is telling them which key actually answers their question.
+         */
+        const val MODE_FLAGS_NOTE: String =
+            "The three ..._permitted_by_mode flags below describe THE MODE, not this run's data. " +
+                "They are written when the run STARTS, before any row exists, so they cannot be " +
+                "verdicts. What actually happened is computed from the rows at the end of the run: " +
+                "battery_samples_valid_for_drain, bijection_screen_evidence, " +
+                "latency_figures_observed. IF THOSE THREE KEYS ARE ABSENT the run never reached a " +
+                "clean stop (OEM kill, crash, battery) and NO verdict was computed for it — read " +
+                "the CSVs directly and trust nothing in this header about their contents."
 
         val CSV_HEADER: String = listOf(
             "seq", "wall_utc_ms", "iso_utc", "elapsed_ms",
